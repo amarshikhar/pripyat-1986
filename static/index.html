@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PRIPYAT-1986 | Agentic AI Crisis Response</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+</head>
+<body>
+    <!-- Header -->
+    <div class="header">
+        <div class="header-left">
+            <div class="title">PRIPYAT-1986 <span>Agentic AI Crisis Response Simulation</span></div>
+            <div class="sim-time" id="simTime">1986-04-25 18:00:00</div>
+        </div>
+        <div class="header-right">
+            <span class="badge scram" id="scramBadge">REACTOR SCRAMMED</span>
+            <span class="badge evac" id="evacBadge">EVACUATION ORDERED</span>
+            <span class="badge diverged" id="divergedBadge">AI TIMELINE DIVERGED</span>
+            <div class="progress-bar-container">
+                <div class="progress-bar" id="progressBar"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="controls">
+        <button class="btn play-btn" id="playBtn" onclick="togglePlay()">PLAY</button>
+        <button class="btn stop-btn" id="stopBtn" onclick="stopSim()">STOP</button>
+        <button class="btn" onclick="resetSim()">RESET</button>
+
+        <div class="control-group">
+            <span class="control-label">Speed</span>
+            <input type="range" class="speed-slider" id="speedSlider"
+                   min="1" max="2500" value="60"
+                   oninput="setSpeed(this.value)">
+            <span class="speed-value" id="speedValue">60x</span>
+        </div>
+
+        <div class="control-group">
+            <span class="control-label">AI Intervention</span>
+            <div class="toggle on" id="interventionToggle" onclick="toggleIntervention()">
+                <div class="toggle-knob"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="main-grid">
+        <!-- Charts Area (2 columns x 3 rows) -->
+        <div class="charts-area">
+            <div class="chart-panel">
+                <div class="panel-title">Thermal Power (MW) <span class="chart-legend"><span class="legend-dot historical"></span>Historical <span class="legend-dot ai"></span>AI Timeline</span></div>
+                <div id="chartPower" style="height:150px"></div>
+            </div>
+            <div class="chart-panel">
+                <div class="panel-title">Steam Pressure (MPa) <span class="chart-legend"><span class="legend-dot historical"></span>Historical <span class="legend-dot ai"></span>AI Timeline</span></div>
+                <div id="chartSteam" style="height:150px"></div>
+            </div>
+            <div class="chart-panel">
+                <div class="panel-title">Control Rods Inserted (/211) <span class="chart-legend"><span class="legend-dot historical"></span>Historical <span class="legend-dot ai"></span>AI Timeline</span></div>
+                <div id="chartRods" style="height:150px"></div>
+            </div>
+            <div class="chart-panel">
+                <div class="panel-title">Core Temperature (&deg;C) <span class="chart-legend"><span class="legend-dot historical"></span>Historical <span class="legend-dot ai"></span>AI Timeline</span></div>
+                <div id="chartTemp" style="height:150px"></div>
+            </div>
+            <div class="chart-panel">
+                <div class="panel-title">Coolant Flow (m&sup3;/h) <span class="chart-legend"><span class="legend-dot historical"></span>Historical <span class="legend-dot ai"></span>AI Timeline</span></div>
+                <div id="chartCoolant" style="height:150px"></div>
+            </div>
+            <div class="chart-panel">
+                <div class="panel-title">Radiation (mrem/h) <span class="chart-legend"><span class="legend-dot historical"></span>Historical <span class="legend-dot ai"></span>AI Timeline</span></div>
+                <div id="chartRadiation" style="height:150px"></div>
+            </div>
+        </div>
+
+        <!-- Right Panel -->
+        <div class="right-panel">
+            <div class="risk-section">
+                <div class="panel-title">Risk Assessment</div>
+                <div class="risk-score normal" id="riskScore">0</div>
+                <div class="risk-bar">
+                    <div class="risk-bar-fill" id="riskBarFill"></div>
+                </div>
+                <div class="alert-level NORMAL" id="alertLevel">NORMAL</div>
+                <div class="decision-mode" id="decisionMode">ADVISORY</div>
+            </div>
+
+            <div class="pipeline-section">
+                <div class="panel-title">Agent Pipeline</div>
+                <div class="pipeline">
+                    <div class="pipeline-node" id="pipeS" title="Sensor Agent">S</div>
+                    <div class="pipeline-arrow">&rarr;</div>
+                    <div class="pipeline-node" id="pipeR" title="Risk Agent">R</div>
+                    <div class="pipeline-arrow">&rarr;</div>
+                    <div class="pipeline-node" id="pipeD" title="Decision Agent">D</div>
+                    <div class="pipeline-arrow">&rarr;</div>
+                    <div class="pipeline-node" id="pipeE" title="Evacuation Agent">E</div>
+                    <div class="pipeline-arrow">&rarr;</div>
+                    <div class="pipeline-node" id="pipeC" title="Comms Agent">C</div>
+                </div>
+            </div>
+
+            <div class="dyatlov-section" id="dyatlovSection">
+                <div class="panel-title dyatlov-title">&#9889; OPERATOR OVERRIDE &mdash; DYATLOV</div>
+                <div class="dyatlov-header-row">
+                    <div class="dyatlov-phase" id="dyatlovPhase">CALM</div>
+                    <div class="dyatlov-phase-desc" id="dyatlovPhaseDesc">Supervising test preparations</div>
+                </div>
+                <div class="dyatlov-chat-log" id="dyatlovChatLog">
+                    <div class="dyatlov-chat-entry">
+                        <span class="dyatlov-chat-time">23:00:00</span>
+                        <span class="dyatlov-chat-text">"The test has been delayed long enough. We run it tonight."</span>
+                    </div>
+                </div>
+                <div class="dyatlov-pressure-row">
+                    <span class="dyatlov-label">Pressure</span>
+                    <div class="dyatlov-bar">
+                        <div class="dyatlov-bar-fill" id="dyatlovBarFill"></div>
+                    </div>
+                    <span class="dyatlov-pressure-val" id="dyatlovPressureVal">0</span>
+                </div>
+                <div class="dyatlov-stats" id="dyatlovStats">Blocked: 0 | Delayed: 0 | Total: 0</div>
+                <div class="dyatlov-result" id="dyatlovResult"></div>
+            </div>
+
+            <div class="agent-log-section">
+                <div class="panel-title">Agent Actions</div>
+                <div class="agent-log" id="agentLog">
+                    <div class="empty-state">Waiting for simulation to start...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Bottom Area -->
+        <div class="bottom-area">
+            <!-- Scrubber -->
+            <div class="scrubber-container">
+                <span class="scrubber-label" id="scrubberTick">Tick: 0 / 0</span>
+                <input type="range" class="scrubber" id="scrubber" min="0" max="100" value="0"
+                       oninput="seekTo(this.value)" disabled>
+                <span class="scrubber-label" id="scrubberPct">0%</span>
+            </div>
+
+            <!-- History -->
+            <div class="panel history-panel">
+                <div class="panel-title">Actual History (1986)</div>
+                <div id="historyContent">
+                    <div class="empty-state">Events will appear as the simulation progresses...</div>
+                </div>
+            </div>
+
+            <!-- Evacuation -->
+            <div class="panel evac-panel">
+                <div class="panel-title">Evacuation Status</div>
+                <div id="evacContent">
+                    <div class="empty-state">No evacuation order yet.</div>
+                </div>
+            </div>
+
+            <!-- Counterfactual -->
+            <div class="panel counterfactual-panel">
+                <div class="panel-title">Counterfactual Comparison</div>
+                <div id="cfContent">
+                    <div class="cf-cards">
+                        <div class="cf-card actual">
+                            <div class="cf-card-title">What Happened</div>
+                            <p>Simulation not yet complete.</p>
+                        </div>
+                        <div class="cf-card ai">
+                            <div class="cf-card-title">What AI Prevents</div>
+                            <p>Waiting for agent intervention...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

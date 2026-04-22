@@ -1,0 +1,128 @@
+PRIPYAT-1986 — Full Architecture
+Concept: Replay the real Chernobyl timeline (April 25–26, 1986) through a multi-agent AI system that makes the decisions Dyatlov refused to make — showing what could have been prevented.
+
+Layer 1: Data Foundation — timeline_data.py
+The backbone of the entire system. Contains:
+
+ReactorState dataclass — a snapshot of Reactor #4 with 11 fields: power_mw, control_rods_inserted, coolant_flow_m3h, steam_pressure_mpa, temperature_c, radiation_mrem_h, eccs_active, plus narrative fields
+CHERNOBYL_TIMELINE — 16 hand-coded ReactorState entries from 13:00 on April 25 to 14:00 on April 26, drawn from INSAG-7 declassified documents. Divided into 5 phases:
+Test Preparation (normal ops)
+Power Drop & Xenon Poisoning (00:28 — the point of no return)
+Dangerous Recovery (rods withdrawn below safe minimum)
+The Test & Catastrophe (explosion at 01:23:40)
+Aftermath (fire, no evacuation, 36-hour delay)
+AI_COUNTERFACTUAL_DECISIONS — a dict mapping 5 timestamps to what the AI should have done at each decision point, with reasoning and lives-saved estimates
+Layer 2: Simulation Engine — simulator.py
+EventSimulator acts as the Historical Replay Engine:
+
+On init, it interpolates between the 16 key timeline events using linear interpolation — generating smooth intermediate ticks at 1-event-per-second cadence
+At 60x speed (default), 1 real minute = 1 simulated hour
+Streams events via an async callback on_event(state, index, total)
+Supports: run(), stop(), pause(), resume(), seek(index), step() for full playback control
+Azure equivalent: Azure Event Hubs producer publishing timestamped telemetry
+Layer 3: Configuration — config.py
+Centralized constants that all agents share:
+
+Config Block	Key Values
+LLM_CONFIG	API key, model, Azure toggle, timeout (5s), temperature (0.2 for decisions, 0.3 for risk)
+SIMULATION	60x speed, explosion time 01:23:40, tick interval 1s
+THRESHOLDS	Power (nominal 3200 MW, danger <200 MW, critical <30 MW), rods (safe ≥30, critical <15), coolant, steam, radiation
+RISK_CONFIG	Escalation threshold 85, warning 60, weighted scoring across 6 parameters
+EVACUATION	49,000 residents, 1,200 buses, 3 escape routes
+Layer 4: LLM Client — llm_client.py
+LLMClient — shared across all AI-powered agents:
+
+Wraps OpenAI SDK (or AzureOpenAI if USE_AZURE=true)
+Single method: call_structured(system_prompt, user_prompt, schema) — uses JSON Schema structured outputs for guaranteed valid responses
+Tracks call_count and avg_latency_ms for the dashboard
+Graceful degradation: returns None on any failure → agents fall back to rule-based logic
+Contains two JSON schemas:
+RISK_ASSESSMENT_SCHEMA → {risk_score, trend, primary_concern, compound_risks, recommendation, reasoning}
+DECISION_SCHEMA → {action, urgency, reasoning, safety_violations, override_operator, additional_actions}
+Contains the two expert system prompts that define agent personas (RBMK-1000 nuclear safety expert)
+Layer 5: The 5 Agents — agents.py
+Agent 1 — SensorAgent (deterministic, no LLM)
+
+Checks every reactor reading against THRESHOLDS
+Fires AgentMessage objects with AlertLevel (NORMAL / WARNING / CRITICAL / EMERGENCY)
+Monitors: power, control rods, ECCS status, coolant flow, steam pressure, radiation
+Routes all alerts to RiskAgent
+Agent 2 — RiskAgent (AI-powered)
+
+Computes a rule-based score first using weighted formula across 6 components + ECCS penalty + compound violation multiplier
+At decision points (key timeline events or threshold crossings at 30/60/85), calls LLM for AI assessment
+Blends: final_score = 0.7 × LLM_score + 0.3 × rule_score
+Detects compound risks and rate-of-change patterns the formula misses
+Falls back to rule score if LLM unavailable
+Maintains score_history for the dashboard graph
+Agent 3 — DecisionAgent (AI-powered, the brain)
+
+Guardrail pattern: Rules run first (non-negotiable safety floor) → LLM adds proactive actions → merge via union
+Hard guardrail 1: Risk > 85 → AZ-5 EMERGENCY SHUTDOWN
+Hard guardrail 2: Radiation ≥ 100 mrem/h → ORDER IMMEDIATE EVACUATION
+LLM can act earlier than rules (proactive); LLM cannot prevent a rule-triggered action
+Anti-hallucination guard: LLM cannot trigger SCRAM if risk < 40
+Action vocabulary: CONTINUE_MONITORING, WARN_ECCS, ABORT_TEST, SCRAM, EVACUATE
+Tracks reactor_scrammed and evacuation_ordered state flags
+Agent 4 — EvacuationAgent (deterministic)
+
+Triggers once when evacuation_ordered = True
+Calculates: trips needed, total hours, bus allocations across 3 routes (Chernihiv, Ivankiv, Poliske)
+Outputs a structured evacuation plan
+Agent 5 — CommsAgent (deterministic + Gaussian physics)
+
+When EMERGENCY decisions are taken, drafts two broadcasts:
+Plant + Moscow — truthful radiation report (contrasts with Dyatlov's cover-up)
+International (IAEA, WHO, Belarus) — with plume modeling
+Gaussian plume model: Pasquill-Gifford σy/σz equations (stability class D, 5 m/s NW wind) — calculates relative radiation dose at 5, 10, 30, 100, 300 km
+Layer 6: Orchestrator — orchestrator.py
+MessageBus — in-memory pub/sub (Azure equivalent: Event Hubs consumer groups)
+
+Orchestrator — coordinates the 5-agent pipeline per tick:
+
+
+Tick N:
+1. SensorAgent.process(state) → sensor_alerts[]
+2. RiskAgent.process(state, alerts) → risk_score, risk_msg
+3. DecisionAgent.process(state, risk_score, alerts) → decisions[]
+4. EvacuationAgent.process(evacuation_flag, state) → evac_action
+5. CommsAgent.process(state, decisions) → comms_actions[]
+6. Build tick summary dict → dashboard
+Accumulates full history. get_final_report() generates the Alternate History Report: AI scram time vs. actual explosion, evacuation hours saved (AI: ~03:00 vs actual: 14:00 on April 27 — 35 hours earlier).
+
+Layer 7: Interface Layer
+Terminal UI — dashboard.py
+
+Rich Live dashboard refreshing at 2Hz
+Split-panel layout: reactor gauges, risk score, agent decisions, actual vs AI timeline
+Web UI — web.py + static/
+
+FastAPI/uvicorn web server
+static/index.html + app.js + style.css — browser dashboard
+Launch via python main.py --web --port 8000
+Entry Point — main.py
+
+Modes: --speed 60 (default), --no-dashboard (JSON output), --smoke-test (5 ticks), --web
+asyncio.run() drives the simulation + dashboard concurrently
+Data Flow (end-to-end)
+
+timeline_data.py          simulator.py          orchestrator.py
+CHERNOBYL_TIMELINE  →  EventSimulator        →  process_tick(state)
+(16 raw events)       (interpolated to N         │
+                       smooth ticks)             ├─ SensorAgent  (thresholds)
+                                                 ├─ RiskAgent    (rule + LLM blend)
+                                                 ├─ DecisionAgent (guardrails + LLM)
+                                                 ├─ EvacuationAgent (logistics)
+                                                 └─ CommsAgent   (plume + broadcasts)
+                                                          │
+                                             dashboard.py / web.py
+                                          (Live UI + final_report.json)
+Azure Migration Path (built-in)
+Every module has inline comments mapping to Azure equivalents:
+
+EventSimulator → Azure Event Hubs producer
+MessageBus → Azure Service Bus / Event Hubs consumer groups
+Orchestrator state → Azure Cosmos DB
+LLMClient → Azure OpenAI (flip USE_AZURE=true)
+Dashboard → Blazor/React web app on AKS
+RiskAgent knowledge retrieval → Azure AI Search over IAEA docs

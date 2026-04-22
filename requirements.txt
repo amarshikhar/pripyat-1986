@@ -1,0 +1,16 @@
+# PRIPYAT-1986 Dependencies
+# Minimal — following repo pattern of lightweight Python tools
+
+rich>=13.0          # Terminal dashboard UI
+python-dotenv>=1.0  # Environment variable management
+openai>=1.0         # LLM reasoning (works with both OpenAI and Azure OpenAI)
+fastapi>=0.104      # Web dashboard server
+uvicorn[standard]>=0.24  # ASGI server for FastAPI
+websockets>=12.0    # WebSocket support
+
+# Azure Migration (uncomment when deploying to Azure):
+# azure-eventhub>=5.11       # Replace EventSimulator
+# azure-cosmos>=4.5          # Replace JSON state files
+# azure-ai-search>=11.4      # Knowledge base retrieval
+# azure-maps-route>=1.0      # Evacuation routing
+# semantic-kernel>=1.0        # Agent orchestration framework

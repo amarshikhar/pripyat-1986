@@ -259,6 +259,7 @@ class Orchestrator:
                 "override_pressure": dyatlov_response.override_pressure,
                 "override_succeeded": dyatlov_response.override_succeeded,
                 "escalation_phase": dyatlov_response.escalation_phase,
+                "reasoning": dyatlov_response.reasoning,
                 "total_attempts": self.total_override_attempts,
                 "total_failures": self.total_override_failures,
                 "total_delays": self.total_override_delays,

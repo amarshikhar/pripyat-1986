@@ -1009,6 +1009,8 @@ class DyatlovAgent:
         self.dialogue_history: list[dict] = []
         self._tick_count: int = 0
         self._last_ambient_idx: int = -1
+        self._emitted_indices: dict[int, set[int]] = {}
+        self._last_phase: int = -1
 
     def _get_phase(self, timestamp: str) -> int:
         """Determine escalation phase from timestamp."""
@@ -1136,10 +1138,15 @@ class DyatlovAgent:
         pressure = self._compute_pressure(phase, state.timestamp, pending_decisions)
         self.override_pressure = pressure
 
+        # Reset emitted tracking on phase transition
+        if phase != self._last_phase:
+            self._emitted_indices.clear()
+            self._last_phase = phase
+
         # Ambient dialogue — rotate through quotes deterministically based on time
         if phase == 0 or (reactor_scrammed and phase < 4):
             ambient_quotes = _DYATLOV_AMBIENT_QUOTES.get(phase, _DYATLOV_AMBIENT_QUOTES[0])
-            
+
             # Determine index based on simulation seconds from start of phase
             try:
                 t_now = datetime.fromisoformat(state.timestamp)
@@ -1149,8 +1156,15 @@ class DyatlovAgent:
                 quote_idx = int(seconds_in_phase // 20) % len(ambient_quotes)
             except (ValueError, TypeError):
                 quote_idx = 0
-                
-            dialogue = ambient_quotes[quote_idx]
+
+            # Only emit each quote index once per phase (prevents cycling duplicates)
+            phase_emitted = self._emitted_indices.setdefault(phase, set())
+            if quote_idx in phase_emitted:
+                dialogue = ""
+            else:
+                phase_emitted.add(quote_idx)
+                dialogue = ambient_quotes[quote_idx]
+
             reasoning = "Supervising test preparations." if phase == 0 else "Reactor shut down."
             return DyatlovResponse(
                 override_attempted=False, override_target=None,
@@ -1174,8 +1188,15 @@ class DyatlovAgent:
                 quote_idx = int(seconds_in_phase // 15) % len(ambient_quotes)
             except (ValueError, TypeError):
                 quote_idx = 0
-            
-            dialogue = ambient_quotes[quote_idx]
+
+            # Only emit each quote index once per phase (prevents cycling duplicates)
+            phase_emitted = self._emitted_indices.setdefault(phase, set())
+            if quote_idx in phase_emitted:
+                dialogue = ""
+            else:
+                phase_emitted.add(quote_idx)
+                dialogue = ambient_quotes[quote_idx]
+
             return DyatlovResponse(
                 override_attempted=False, override_target=None,
                 pushback_dialogue=dialogue,

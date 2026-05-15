@@ -79,7 +79,7 @@ function handleTick(data) {
     toggleBadge('divergedBadge', data.state.diverged);
 
     // Risk gauge
-    updateRisk(data.risk_score, data.alert_level);
+    updateRisk(data.risk_score, data.alert_level, data.decisions, data.state.reactor_scrammed);
 
     // Charts
     appendChartData(data);
@@ -88,8 +88,11 @@ function handleTick(data) {
     // Pipeline animation
     animatePipeline(data.decisions);
 
-    // Dyatlov override panel
-    if (data.dyatlov) updateDyatlov(data.dyatlov);
+    // LLM status
+    if (data.llm_stats) updateLLMStatus(data.llm_stats);
+
+    // Dyatlov override panel (skip in manual mode — operator IS the human)
+    if (data.dyatlov && !manualMode) updateDyatlov(data.dyatlov);
 
     // Agent log
     if (data.decisions.length > 0) {
@@ -142,6 +145,11 @@ function handleTick(data) {
     // Counterfactual
     if (data.counterfactual) {
         updateCounterfactual(data.counterfactual, data.state);
+    }
+
+    // Audit log
+    if (data.audit_log) {
+        handleAuditLog(data.audit_log);
     }
 }
 
@@ -243,10 +251,23 @@ function resetSim() {
     document.getElementById('dyatlovPressureVal').textContent = '0';
     document.getElementById('dyatlovStats').textContent = 'Blocked: 0 | Delayed: 0 | Total: 0';
     document.getElementById('dyatlovResult').textContent = '';
+    document.getElementById('cfContent').innerHTML = `
+        <div class="cf-cards">
+            <div class="cf-card actual">
+                <div class="cf-card-title">What Happened</div>
+                <p>Simulation not yet complete.</p>
+            </div>
+            <div class="cf-card ai">
+                <div class="cf-card-title">What AI Prevents</div>
+                <p>Waiting for agent intervention...</p>
+            </div>
+        </div>
+    `;
     document.getElementById('historyContent').innerHTML = '<div class="empty-state">Events will appear as the simulation progresses...</div>';
     document.getElementById('evacContent').innerHTML = '<div class="empty-state">No evacuation order yet.</div>';
-    updateRisk(0, 'NORMAL');
+    updateRisk(0, 'NORMAL', [], false);
     initCharts();
+    resetAuditLog();
     sendControl('reset');
 }
 
@@ -268,13 +289,137 @@ function seekTo(val) {
     }
 }
 
+// ── Manual Control Mode ──────────────────────────────────────────
+
+let manualMode = false;
+let manualDebounceTimer = null;
+let manualEccsActive = true;
+let manualTickCounter = 0;
+let manualTickInterval = null;  // Continuous tick interval
+const MANUAL_TICK_RATE_MS = 1500;  // 1.5s per tick — smooth like real control room
+
+function toggleManualMode() {
+    manualMode = !manualMode;
+    const btn = document.getElementById('manualBtn');
+    const panel = document.getElementById('manualPanel');
+
+    if (manualMode) {
+        // Pause timeline
+        sendControl('pause');
+        btn.classList.add('active');
+        panel.style.display = 'block';
+        // Hide Dyatlov section in manual mode
+        document.getElementById('dyatlovSection').style.display = 'none';
+        // Disable timeline controls
+        document.getElementById('playBtn').disabled = true;
+        document.getElementById('stopBtn').disabled = true;
+        document.getElementById('resetBtn').disabled = true;
+        document.getElementById('scrubber').disabled = true;
+        document.getElementById('speedSlider').disabled = true;
+        // Clear chart data for fresh manual graphs
+        chartData.timestamps = [];
+        Object.keys(chartData.historical).forEach(k => chartData.historical[k] = []);
+        Object.keys(chartData.intervened).forEach(k => chartData.intervened[k] = []);
+        pendingPoints.timestamps = [];
+        Object.keys(pendingPoints.historical).forEach(k => pendingPoints.historical[k] = []);
+        Object.keys(pendingPoints.intervened).forEach(k => pendingPoints.intervened[k] = []);
+        initCharts();
+        manualTickCounter = 0;
+        // Clear agent log for manual session
+        logEntryCount = 0;
+        document.getElementById('agentLog').innerHTML = '<div class="empty-state">Starting manual control...</div>';
+        // Reset audit log for manual session
+        resetAuditLog();
+        // Reset LLM stats display
+        updateLLMStatus({ llm_available: true, total_calls: 0, total_failures: 0, avg_latency_ms: 0, last_call_ok: false, last_call_time: null });
+        // Start continuous tick interval (like a real control room data stream)
+        manualTickInterval = setInterval(sendManualTickFromSliders, MANUAL_TICK_RATE_MS);
+        // Send first tick immediately
+        sendManualTickFromSliders();
+    } else {
+        btn.classList.remove('active');
+        panel.style.display = 'none';
+        // Show Dyatlov section again
+        document.getElementById('dyatlovSection').style.display = '';
+        // Stop continuous ticks
+        if (manualTickInterval) {
+            clearInterval(manualTickInterval);
+            manualTickInterval = null;
+        }
+        // Re-enable timeline controls
+        document.getElementById('playBtn').disabled = false;
+        document.getElementById('stopBtn').disabled = false;
+        document.getElementById('resetBtn').disabled = false;
+        document.getElementById('scrubber').disabled = false;
+        document.getElementById('speedSlider').disabled = false;
+        // Reset manual orchestrator and resume
+        fetch('/api/manual_reset', { method: 'POST' });
+        sendControl('play');
+    }
+}
+
+function toggleECCS() {
+    manualEccsActive = !manualEccsActive;
+    const toggle = document.getElementById('eccsToggle');
+    toggle.classList.toggle('on', manualEccsActive);
+    document.getElementById('eccsVal').textContent = manualEccsActive ? 'ON' : 'OFF';
+    // ECCS is instant (it's a switch, not a ramp) — next tick will use the new value
+}
+
+function onManualSliderChange() {
+    // Update display values only — continuous interval handles the tick sending
+    const rods = parseInt(document.getElementById('rodsSlider').value);
+    const coolant = parseInt(document.getElementById('coolantSlider').value);
+    document.getElementById('rodsVal').textContent = rods;
+    document.getElementById('coolantVal').textContent = coolant;
+}
+
+function sendManualTickFromSliders() {
+    const rods = parseInt(document.getElementById('rodsSlider').value);
+    const coolant = parseInt(document.getElementById('coolantSlider').value);
+    sendManualTick(rods, coolant, manualEccsActive);
+}
+
+async function sendManualTick(controlRods, coolantFlow, eccsActive) {
+    try {
+        const resp = await fetch('/api/manual_tick', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                control_rods: controlRods,
+                coolant_flow: coolantFlow,
+                eccs_active: eccsActive,
+            }),
+        });
+        const data = await resp.json();
+        // Update manual panel derived readouts immediately
+        if (data.derived) {
+            document.getElementById('derivedPower').textContent = data.derived.power_mw.toFixed(1);
+            document.getElementById('derivedTemp').textContent = data.derived.temperature_c.toFixed(1);
+            document.getElementById('derivedSteam').textContent = data.derived.steam_pressure_mpa.toFixed(2);
+            document.getElementById('derivedRad').textContent = data.derived.radiation_mrem_h.toFixed(4);
+        }
+        // Show actual ramped values (where the reactor REALLY is vs target)
+        if (data.actual_rods !== undefined) {
+            document.getElementById('rodsVal').textContent = Math.round(data.actual_rods);
+        }
+        if (data.actual_coolant !== undefined) {
+            document.getElementById('coolantVal').textContent = Math.round(data.actual_coolant);
+        }
+        // All other UI updates (risk, charts, LLM, Dyatlov, agent log)
+        // are handled by the WebSocket broadcast from the server
+    } catch (e) {
+        console.error('Manual tick failed:', e);
+    }
+}
+
 // ── UI Helpers ───────────────────────────────────────────────────
 
 function toggleBadge(id, active) {
     document.getElementById(id).classList.toggle('active', active);
 }
 
-function updateRisk(score, level) {
+function updateRisk(score, level, decisions, scrammed) {
     const el = document.getElementById('riskScore');
     el.textContent = score;
     el.className = 'risk-score ' + level.toLowerCase();
@@ -292,9 +437,16 @@ function updateRisk(score, level) {
 
     const decisionEl = document.getElementById('decisionMode');
     decisionEl.className = 'decision-mode ' + level;
-    if (score >= 85) decisionEl.textContent = '[AUTO-EXECUTE ⚡]';
-    else if (score >= 60) decisionEl.textContent = '[CONFIRM REQUIRED]';
-    else decisionEl.textContent = '[ADVISORY]';
+
+    // AUTO-EXECUTE if: SCRAM ordered, risk >= 85, or SCRAM decision in this tick
+    const hasScram = decisions && decisions.some(d => d.action && d.action.includes('SCRAM'));
+    if (scrammed || hasScram || score >= 85) {
+        decisionEl.textContent = '[AUTO-EXECUTE ⚡]';
+    } else if (score >= 60) {
+        decisionEl.textContent = '[CONFIRM REQUIRED]';
+    } else {
+        decisionEl.textContent = '[ADVISORY]';
+    }
 }
 
 function animatePipeline(decisions) {
@@ -325,15 +477,42 @@ function animatePipeline(decisions) {
     });
 }
 
+function updateLLMStatus(stats) {
+    const indicator = document.getElementById('llmIndicator');
+    const label = document.getElementById('llmLabel');
+    const calls = document.getElementById('llmCalls');
+    const latency = document.getElementById('llmLatency');
+
+    if (!stats.llm_available) {
+        indicator.className = 'llm-indicator disconnected';
+        label.textContent = 'LLM: OFF';
+    } else if (stats.total_calls > 0 && stats.last_call_ok) {
+        indicator.className = 'llm-indicator connected';
+        label.textContent = 'LLM: ACTIVE';
+    } else if (stats.total_failures > 0 && stats.total_calls === 0) {
+        indicator.className = 'llm-indicator disconnected';
+        label.textContent = 'LLM: FAILING';
+    } else {
+        indicator.className = 'llm-indicator connected';
+        label.textContent = 'LLM: READY';
+    }
+
+    calls.textContent = `Calls: ${stats.total_calls}${stats.total_failures > 0 ? ' (' + stats.total_failures + ' failed)' : ''}`;
+    latency.textContent = stats.avg_latency_ms > 0 ? `Avg: ${stats.avg_latency_ms}ms` : 'Avg: --ms';
+}
+
 function addLogEntries(decisions, timestamp) {
     const log = document.getElementById('agentLog');
     if (logEntryCount === 0) log.innerHTML = '';
+
+    const timeOnly = timestamp.includes('T') ? timestamp.split('T')[1] : timestamp;
 
     decisions.forEach(d => {
         const entry = document.createElement('div');
         entry.className = 'log-entry';
         entry.innerHTML = `
             <div class="log-entry-header">
+                <span class="log-time">${timeOnly}</span>
                 <span class="log-agent ${d.agent}">${d.agent}</span>
                 <span class="log-level ${d.level}">${d.level}</span>
             </div>
@@ -362,7 +541,8 @@ function updateHistory(event, decision) {
         <div class="history-event">${event}</div>
         ${decision ? `<div class="history-decision">${decision}</div>` : ''}
     `;
-    el.prepend(entry);  // newest at top (reverse chronological)
+    el.appendChild(entry);  // chronological order — oldest at top, newest at bottom
+    el.scrollTop = el.scrollHeight;
 }
 
 function updateEvacuation(evac) {
@@ -438,9 +618,15 @@ function updateDyatlov(data) {
     
     phaseEl.textContent = phaseNames[data.escalation_phase] || 'UNKNOWN';
     phaseEl.style.color = phaseColors[data.escalation_phase] || 'var(--text-muted)';
-    descEl.textContent = data.reasoning;
+    descEl.textContent = data.reasoning || '';
     barEl.style.width = `${data.override_pressure}%`;
     pressureEl.textContent = `${Math.round(data.override_pressure)}%`;
+
+    // Update override stats
+    const statsEl = document.getElementById('dyatlovStats');
+    if (statsEl && data.total_attempts !== undefined) {
+        statsEl.textContent = `Blocked: ${data.total_failures || 0} | Delayed: ${data.total_delays || 0} | Total: ${data.total_attempts || 0}`;
+    }
 
     // Get the quote text
     const quote = data.pushback_dialogue;
@@ -470,8 +656,9 @@ function updateDyatlov(data) {
         textEl.style.color = 'var(--orange)';
     }
 
-    // Prepend (newest at top due to column-reverse)
-    chatLog.prepend(entry);
+    // Append (chronological order, newest at bottom)
+    chatLog.appendChild(entry);
+    chatLog.scrollTop = chatLog.scrollHeight;
 
     // Keep log manageable (max 30 entries)
     while (chatLog.children.length > 30) {
@@ -505,9 +692,11 @@ const chartLayout = {
 const chartConfig = { displayModeBar: false, responsive: true };
 
 function makeTraces(histColor, aiColor) {
+    const histName = manualMode ? 'Reactor State' : 'Historical';
+    const aiName = manualMode ? 'AI Override' : 'AI Timeline';
     return [
-        { x: [], y: [], name: 'Historical', line: { color: histColor, width: 2 }, type: 'scattergl' },
-        { x: [], y: [], name: 'AI Timeline', line: { color: aiColor, width: 2, dash: 'dot' }, type: 'scattergl' },
+        { x: [], y: [], name: histName, line: { color: histColor, width: 2 }, type: 'scattergl' },
+        { x: [], y: [], name: aiName, line: { color: aiColor, width: 2, dash: 'dot' }, type: 'scattergl' },
     ];
 }
 
@@ -587,7 +776,8 @@ const CHART_UPDATE_INTERVAL = 200; // ms — max 5 chart updates per second
 
 function updateCharts() {
     const now = performance.now();
-    if (now - lastChartUpdate < CHART_UPDATE_INTERVAL) return;
+    // In manual mode, always update immediately
+    if (!manualMode && now - lastChartUpdate < CHART_UPDATE_INTERVAL) return;
     if (pendingPoints.timestamps.length === 0) return;
 
     lastChartUpdate = now;
@@ -618,6 +808,182 @@ function updateCharts() {
             }, [0, 1], MAX_POINTS);
         }
     });
+}
+
+// ── Audit Log ────────────────────────────────────────────────────
+
+const auditLogEntries = [];  // Accumulates all audit entries for copy
+const MAX_AUDIT_ROWS = 5000;
+let auditRowCount = 0;
+
+function handleAuditLog(entries) {
+    if (!entries || entries.length === 0) return;
+
+    const tbody = document.getElementById('auditLogBody');
+    // Remove empty-state row on first data
+    const emptyRow = tbody.querySelector('.audit-empty-row');
+    if (emptyRow) emptyRow.remove();
+
+    // Use document fragment for batch DOM insert (no reflow per row)
+    const fragment = document.createDocumentFragment();
+
+    for (const entry of entries) {
+        auditLogEntries.push(entry);
+        auditRowCount++;
+
+        const tr = document.createElement('tr');
+
+        // Timestamp
+        const tdTs = document.createElement('td');
+        tdTs.className = 'audit-ts';
+        const ts = entry.ts || '';
+        tdTs.textContent = ts.includes('T') ? ts.split('T')[1] || ts : ts;
+        tr.appendChild(tdTs);
+
+        // Tick
+        const tdTick = document.createElement('td');
+        tdTick.className = 'audit-tick';
+        tdTick.textContent = entry.tick || '';
+        tr.appendChild(tdTick);
+
+        // Agent
+        const tdAgent = document.createElement('td');
+        const agentSpan = document.createElement('span');
+        agentSpan.className = 'audit-agent-tag ' + (entry.agent || '');
+        agentSpan.textContent = entry.agent || '';
+        tdAgent.appendChild(agentSpan);
+        tr.appendChild(tdAgent);
+
+        // Type
+        const tdType = document.createElement('td');
+        const typeSpan = document.createElement('span');
+        typeSpan.className = 'audit-type-tag ' + (entry.type || '');
+        typeSpan.textContent = entry.type || '';
+        tdType.appendChild(typeSpan);
+        tr.appendChild(tdType);
+
+        // Direction
+        const tdDir = document.createElement('td');
+        const dirSpan = document.createElement('span');
+        dirSpan.className = 'audit-dir ' + (entry.direction || '');
+        dirSpan.textContent = entry.direction || '';
+        tdDir.appendChild(dirSpan);
+        tr.appendChild(tdDir);
+
+        // Source
+        const tdSrc = document.createElement('td');
+        const srcSpan = document.createElement('span');
+        srcSpan.className = 'audit-src ' + (entry.source || '');
+        srcSpan.textContent = entry.source || '';
+        tdSrc.appendChild(srcSpan);
+        tr.appendChild(tdSrc);
+
+        // Status
+        const tdStatus = document.createElement('td');
+        const statusSpan = document.createElement('span');
+        statusSpan.className = 'audit-status ' + (entry.status || 'ok');
+        statusSpan.textContent = entry.status || 'ok';
+        tdStatus.appendChild(statusSpan);
+        tr.appendChild(tdStatus);
+
+        // Detail
+        const tdDetail = document.createElement('td');
+        tdDetail.className = 'audit-detail';
+        tdDetail.textContent = entry.detail || '';
+        tr.appendChild(tdDetail);
+
+        fragment.appendChild(tr);
+    }
+
+    tbody.appendChild(fragment);
+
+    // Trim old rows if too many
+    while (tbody.children.length > MAX_AUDIT_ROWS) {
+        tbody.removeChild(tbody.firstChild);
+    }
+
+    // Auto-scroll to bottom
+    const wrap = document.getElementById('auditLogWrap');
+    wrap.scrollTop = wrap.scrollHeight;
+
+    // Update count
+    document.getElementById('auditLogCount').textContent = auditLogEntries.length + ' entries';
+}
+
+function copyAuditLog() {
+    if (auditLogEntries.length === 0) return;
+
+    // Build deduplicated TSV — collapse consecutive identical entries
+    const header = 'Timestamp\tTick\tAgent\tType\tDirection\tSource\tStatus\tDetail';
+    const deduped = [];
+    let prev = null;
+    let repeatCount = 0;
+    let firstTick = null;
+
+    for (const e of auditLogEntries) {
+        const sig = `${e.agent}|${e.type}|${e.detail}`;
+        if (prev && sig === prev.sig) {
+            repeatCount++;
+        } else {
+            // Flush previous
+            if (prev) {
+                if (repeatCount > 0) {
+                    deduped.push(
+                        `${prev.e.ts || ''}\t${firstTick}–${prev.e.tick}\t${prev.e.agent || ''}\t${prev.e.type || ''}\t${prev.e.direction || ''}\t${prev.e.source || ''}\t${prev.e.status || ''}\t[×${repeatCount + 1} ticks] ${prev.e.detail || ''}`
+                    );
+                } else {
+                    deduped.push(
+                        `${prev.e.ts || ''}\t${prev.e.tick || ''}\t${prev.e.agent || ''}\t${prev.e.type || ''}\t${prev.e.direction || ''}\t${prev.e.source || ''}\t${prev.e.status || ''}\t${prev.e.detail || ''}`
+                    );
+                }
+            }
+            prev = { sig, e };
+            repeatCount = 0;
+            firstTick = e.tick;
+        }
+    }
+    // Flush last
+    if (prev) {
+        if (repeatCount > 0) {
+            deduped.push(
+                `${prev.e.ts || ''}\t${firstTick}–${prev.e.tick}\t${prev.e.agent || ''}\t${prev.e.type || ''}\t${prev.e.direction || ''}\t${prev.e.source || ''}\t${prev.e.status || ''}\t[×${repeatCount + 1} ticks] ${prev.e.detail || ''}`
+            );
+        } else {
+            deduped.push(
+                `${prev.e.ts || ''}\t${prev.e.tick || ''}\t${prev.e.agent || ''}\t${prev.e.type || ''}\t${prev.e.direction || ''}\t${prev.e.source || ''}\t${prev.e.status || ''}\t${prev.e.detail || ''}`
+            );
+        }
+    }
+
+    const text = header + '\n' + deduped.join('\n');
+
+    navigator.clipboard.writeText(text).then(() => {
+        const btn = document.getElementById('auditCopyBtn');
+        btn.textContent = 'COPIED!';
+        btn.classList.add('copied');
+        setTimeout(() => {
+            btn.textContent = 'COPY LOG';
+            btn.classList.remove('copied');
+        }, 2000);
+    }).catch(err => {
+        console.error('Failed to copy audit log:', err);
+    });
+}
+
+function clearAuditLog() {
+    auditLogEntries.length = 0;
+    auditRowCount = 0;
+    const tbody = document.getElementById('auditLogBody');
+    tbody.innerHTML = '<tr class="audit-empty-row"><td colspan="8" class="empty-state">Log cleared.</td></tr>';
+    document.getElementById('auditLogCount').textContent = '0 entries';
+}
+
+function resetAuditLog() {
+    auditLogEntries.length = 0;
+    auditRowCount = 0;
+    const tbody = document.getElementById('auditLogBody');
+    tbody.innerHTML = '<tr class="audit-empty-row"><td colspan="8" class="empty-state">Waiting for simulation to start...</td></tr>';
+    document.getElementById('auditLogCount').textContent = '0 entries';
 }
 
 // ── Init ─────────────────────────────────────────────────────────

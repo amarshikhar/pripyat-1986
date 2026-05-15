@@ -1,0 +1,202 @@
+Timestamp	Tick	Agent	Type	Direction	Source	Status	Detail
+2026-05-04T05:10:35	1	Orchestrator	TICK_START	INPUT	physics	ok	Power=1007MW Rods=100 Coolant=8000 Temp=406°C Rad=0.0010
+2026-05-04T05:10:35	1	SensorAgent	SENSOR_CHECK	OUTPUT	rule	ok	All parameters within thresholds
+2026-05-04T05:10:35	1	RiskAgent	RISK_CALC	OUTPUT	rule	ok	Risk=16/100 [NORMAL] source=rule
+2026-05-04T05:10:35	1	DecisionAgent	DECISION	OUTPUT	rule	ok	No action required (risk=16)
+2026-05-04T05:11:06	23	Orchestrator	TICK_START	OUTPUT	physics	ok	[×21 ticks 1–22] Power=1007MW Rods=100 Coolant=8000 Temp=406°C Rad=0.0010
+2026-05-04T05:11:06	23	Orchestrator	TICK_START	INPUT	physics	ok	Power=1056MW Rods=97 Coolant=8000 Temp=412°C Rad=0.0011
+2026-05-04T05:11:06	23	LLM	LLM_CALL	INPUT	llm	ok	Structured call [risk_assessment] model=pripyat-gpt4o temp=0.3
+2026-05-04T05:11:07	24	Orchestrator	TICK_START	INPUT	physics	ok	Power=1107MW Rods=94 Coolant=8000 Temp=418°C Rad=0.0012
+2026-05-04T05:11:07	24	LLM	LLM_CALL	INPUT	llm	ok	Structured call [risk_assessment] model=pripyat-gpt4o temp=0.3
+2026-05-04T05:11:07	24	LLM	LLM_CALL	OUTPUT	llm	ok	LLM OK [risk_assessment] latency=2936ms
+2026-05-04T05:11:07	24	RiskAgent	RISK_CALC	OUTPUT	rule	ok	[×21 ticks 1–22] Risk=16/100 [NORMAL] source=rule
+2026-05-04T05:11:07	24	RiskAgent	RISK_CALC	OUTPUT	llm	ok	Risk=40/100 [WARNING] source=llm | AI: The reactor power is increasing while the number of inserted control rods is decreasing, which reduces the shutdown marg
+2026-05-04T05:11:07	24	DecisionAgent	DECISION	OUTPUT	rule	ok	[×21 ticks 1–22] No action required (risk=16)
+2026-05-04T05:11:07	24	DecisionAgent	DECISION	OUTPUT	rule	ok	No action required (risk=40)
+2026-05-04T05:11:09	25	Orchestrator	TICK_START	INPUT	physics	ok	Power=1159MW Rods=91 Coolant=8000 Temp=425°C Rad=0.0013
+2026-05-04T05:11:09	25	RiskAgent	RISK_CALC	OUTPUT	rule	ok	Risk=31/100 [WARNING] source=rule
+2026-05-04T05:11:09	25	DecisionAgent	DECISION	OUTPUT	rule	ok	No action required (risk=31)
+2026-05-04T05:11:09	25	LLM	LLM_CALL	OUTPUT	llm	ok	LLM OK [risk_assessment] latency=2392ms
+2026-05-04T05:11:09	25	RiskAgent	RISK_CALC	OUTPUT	llm	ok	Risk=40/100 [WARNING] source=llm | AI: The reactor's core temperature is significantly above nominal levels, and power output is increasing, which indicates ri
+2026-05-04T05:11:09	25	DecisionAgent	DECISION	OUTPUT	rule	ok	No action required (risk=40)
+2026-05-04T05:11:10	26	Orchestrator	TICK_START	INPUT	physics	ok	Power=1211MW Rods=88 Coolant=8000 Temp=431°C Rad=0.0014
+2026-05-04T05:11:10	26	RiskAgent	RISK_CALC	OUTPUT	rule	ok	Risk=31/100 [WARNING] source=rule
+2026-05-04T05:11:10	26	DecisionAgent	DECISION	OUTPUT	rule	ok	No action required (risk=31)
+2026-05-04T05:11:12	27	Orchestrator	TICK_START	INPUT	physics	ok	Power=1265MW Rods=85 Coolant=8000 Temp=438°C Rad=0.0016
+2026-05-04T05:11:13	28	Orchestrator	TICK_START	INPUT	physics	ok	Power=1320MW Rods=82 Coolant=8000 Temp=445°C Rad=0.0017
+2026-05-04T05:11:15	29	Orchestrator	TICK_START	INPUT	physics	ok	Power=1376MW Rods=79 Coolant=8000 Temp=452°C Rad=0.0018
+2026-05-04T05:11:16	30	Orchestrator	TICK_START	INPUT	physics	ok	Power=1432MW Rods=76 Coolant=8000 Temp=459°C Rad=0.0020
+2026-05-04T05:11:18	31	Orchestrator	TICK_START	INPUT	physics	ok	Power=1490MW Rods=73 Coolant=8000 Temp=466°C Rad=0.0022
+2026-05-04T05:11:18	31	SensorAgent	SENSOR_CHECK	OUTPUT	rule	ok	[×30 ticks 1–31] All parameters within thresholds
+2026-05-04T05:11:18	31	RiskAgent	RISK_CALC	OUTPUT	rule	ok	[×4 ticks 26–30] Risk=31/100 [WARNING] source=rule
+2026-05-04T05:11:18	31	RiskAgent	RISK_CALC	OUTPUT	rule	ok	Risk=32/100 [WARNING] source=rule
+2026-05-04T05:11:18	31	DecisionAgent	DECISION	OUTPUT	rule	ok	[×4 ticks 26–30] No action required (risk=31)
+2026-05-04T05:11:18	31	DecisionAgent	DECISION	OUTPUT	rule	ok	No action required (risk=32)
+2026-05-04T05:11:19	32	Orchestrator	TICK_START	INPUT	physics	ok	Power=1549MW Rods=70 Coolant=8000 Temp=474°C Rad=0.0023
+2026-05-04T05:11:21	33	Orchestrator	TICK_START	INPUT	physics	ok	Power=1609MW Rods=67 Coolant=8000 Temp=481°C Rad=0.0025
+2026-05-04T05:11:22	34	Orchestrator	TICK_START	INPUT	physics	ok	Power=1670MW Rods=64 Coolant=8000 Temp=489°C Rad=0.0027
+2026-05-04T05:11:24	35	Orchestrator	TICK_START	INPUT	physics	ok	Power=1731MW Rods=61 Coolant=8000 Temp=496°C Rad=0.0029
+2026-05-04T05:11:25	36	Orchestrator	TICK_START	INPUT	physics	ok	Power=1794MW Rods=58 Coolant=8000 Temp=504°C Rad=0.0031
+2026-05-04T05:11:27	37	Orchestrator	TICK_START	INPUT	physics	ok	Power=1858MW Rods=55 Coolant=8000 Temp=512°C Rad=0.0034
+2026-05-04T05:11:28	38	Orchestrator	TICK_START	INPUT	physics	ok	Power=1923MW Rods=52 Coolant=8000 Temp=520°C Rad=0.0036
+2026-05-04T05:11:30	39	Orchestrator	TICK_START	INPUT	physics	ok	Power=1989MW Rods=49 Coolant=8000 Temp=529°C Rad=0.0039
+2026-05-04T05:11:30	39	RiskAgent	RISK_CALC	OUTPUT	rule	ok	[×7 ticks 31–38] Risk=32/100 [WARNING] source=rule
+2026-05-04T05:11:30	39	RiskAgent	RISK_CALC	OUTPUT	rule	ok	Risk=33/100 [WARNING] source=rule
+2026-05-04T05:11:30	39	DecisionAgent	DECISION	OUTPUT	rule	ok	[×7 ticks 31–38] No action required (risk=32)
+2026-05-04T05:11:30	39	DecisionAgent	DECISION	OUTPUT	rule	ok	No action required (risk=33)
+2026-05-04T05:11:31	40	Orchestrator	TICK_START	INPUT	physics	ok	Power=2056MW Rods=46 Coolant=8000 Temp=537°C Rad=0.0041
+2026-05-04T05:11:33	41	Orchestrator	TICK_START	INPUT	physics	ok	Power=2123MW Rods=43 Coolant=8000 Temp=545°C Rad=0.0044
+2026-05-04T05:11:33	41	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[EMERGENCY] STEAM PRESSURE CRITICAL: Steam pressure at 7.5 MPa — rupture risk.
+2026-05-04T05:11:33	41	RiskAgent	RISK_CALC	OUTPUT	rule	ok	[×1 ticks 39–40] Risk=33/100 [WARNING] source=rule
+2026-05-04T05:11:33	41	RiskAgent	RISK_CALC	OUTPUT	rule	ok	Risk=41/100 [WARNING] source=rule
+2026-05-04T05:11:33	41	DecisionAgent	DECISION	OUTPUT	rule	ok	[×1 ticks 39–40] No action required (risk=33)
+2026-05-04T05:11:33	41	DecisionAgent	DECISION	OUTPUT	rule	ok	No action required (risk=41)
+2026-05-04T05:11:34	42	Orchestrator	TICK_START	INPUT	physics	ok	Power=2192MW Rods=40 Coolant=8000 Temp=554°C Rad=0.0047
+2026-05-04T05:11:34	42	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[EMERGENCY] STEAM PRESSURE CRITICAL: Steam pressure at 7.53 MPa — rupture risk.
+2026-05-04T05:11:36	43	Orchestrator	TICK_START	INPUT	physics	ok	Power=2262MW Rods=37 Coolant=8000 Temp=563°C Rad=0.0050
+2026-05-04T05:11:36	43	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[EMERGENCY] STEAM PRESSURE CRITICAL: Steam pressure at 7.56 MPa — rupture risk.
+2026-05-04T05:11:37	44	Orchestrator	TICK_START	INPUT	physics	ok	Power=2332MW Rods=34 Coolant=8000 Temp=572°C Rad=0.0053
+2026-05-04T05:11:37	44	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[EMERGENCY] STEAM PRESSURE CRITICAL: Steam pressure at 7.59 MPa — rupture risk.
+2026-05-04T05:11:39	45	Orchestrator	TICK_START	INPUT	physics	ok	Power=2404MW Rods=31 Coolant=8000 Temp=580°C Rad=0.0056
+2026-05-04T05:11:39	45	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[EMERGENCY] STEAM PRESSURE CRITICAL: Steam pressure at 7.63 MPa — rupture risk.
+2026-05-04T05:11:40	46	Orchestrator	TICK_START	INPUT	physics	ok	Power=2477MW Rods=28 Coolant=8000 Temp=590°C Rad=0.0060
+2026-05-04T05:11:40	46	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[CRITICAL] CONTROL RODS LOW: 28 rods inserted — at or below minimum safe (30).
+2026-05-04T05:11:40	46	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[EMERGENCY] STEAM PRESSURE CRITICAL: Steam pressure at 7.66 MPa — rupture risk.
+2026-05-04T05:11:40	46	LLM	LLM_CALL	INPUT	llm	ok	Structured call [risk_assessment] model=pripyat-gpt4o temp=0.3
+2026-05-04T05:11:42	47	Orchestrator	TICK_START	INPUT	physics	ok	Power=2550MW Rods=25 Coolant=8000 Temp=599°C Rad=0.0064
+2026-05-04T05:11:42	47	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[CRITICAL] CONTROL RODS LOW: 25 rods inserted — at or below minimum safe (30).
+2026-05-04T05:11:42	47	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[EMERGENCY] STEAM PRESSURE CRITICAL: Steam pressure at 7.7 MPa — rupture risk.
+2026-05-04T05:11:42	47	LLM	LLM_CALL	INPUT	llm	ok	Structured call [risk_assessment] model=pripyat-gpt4o temp=0.3
+2026-05-04T05:11:42	47	LLM	LLM_CALL	OUTPUT	llm	ok	LLM OK [risk_assessment] latency=2735ms
+2026-05-04T05:11:42	47	RiskAgent	RISK_CALC	OUTPUT	rule	ok	[×4 ticks 41–45] Risk=41/100 [WARNING] source=rule
+2026-05-04T05:11:42	47	RiskAgent	RISK_CALC	OUTPUT	llm	ok	Risk=79/100 [CRITICAL] source=llm | AI: The reactor is operating with fewer control rods than the minimum safe level, which compromises shutdown margin. High st
+2026-05-04T05:11:42	47	DecisionAgent	DECISION	OUTPUT	rule	ok	[×4 ticks 41–45] No action required (risk=41)
+2026-05-04T05:11:42	47	DecisionAgent	DECISION	OUTPUT	rule	ok	No action required (risk=79)
+2026-05-04T05:11:43	48	Orchestrator	TICK_START	INPUT	physics	ok	Power=2625MW Rods=22 Coolant=8000 Temp=608°C Rad=0.0067
+2026-05-04T05:11:43	48	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[CRITICAL] CONTROL RODS LOW: 22 rods inserted — at or below minimum safe (30).
+2026-05-04T05:11:43	48	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[EMERGENCY] STEAM PRESSURE CRITICAL: Steam pressure at 7.73 MPa — rupture risk.
+2026-05-04T05:11:43	48	RiskAgent	RISK_CALC	OUTPUT	rule	ok	Risk=63/100 [CRITICAL] source=rule
+2026-05-04T05:11:43	48	DecisionAgent	DECISION	OUTPUT	rule	ok	No action required (risk=63)
+2026-05-04T05:11:45	49	Orchestrator	TICK_START	INPUT	physics	ok	Power=2700MW Rods=19 Coolant=8000 Temp=618°C Rad=0.0071
+2026-05-04T05:11:45	49	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[CRITICAL] CONTROL RODS LOW: 19 rods inserted — at or below minimum safe (30).
+2026-05-04T05:11:45	49	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[EMERGENCY] STEAM PRESSURE CRITICAL: Steam pressure at 7.77 MPa — rupture risk.
+2026-05-04T05:11:45	49	LLM	LLM_CALL	OUTPUT	llm	ok	LLM OK [risk_assessment] latency=2890ms
+2026-05-04T05:11:45	49	RiskAgent	RISK_CALC	OUTPUT	rule	ok	[×1 ticks 48–49] Risk=63/100 [CRITICAL] source=rule
+2026-05-04T05:11:45	49	RiskAgent	RISK_CALC	OUTPUT	llm	ok	Risk=78/100 [CRITICAL] source=llm | AI: The reactor is operating with fewer control rods than the minimum safe threshold, which severely reduces shutdown margin
+2026-05-04T05:11:45	49	DecisionAgent	DECISION	OUTPUT	rule	ok	[×1 ticks 48–49] No action required (risk=63)
+2026-05-04T05:11:45	49	DecisionAgent	DECISION	OUTPUT	rule	ok	No action required (risk=78)
+2026-05-04T05:11:46	50	Orchestrator	TICK_START	INPUT	physics	ok	Power=2776MW Rods=16 Coolant=8000 Temp=627°C Rad=0.0075
+2026-05-04T05:11:46	50	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[CRITICAL] CONTROL RODS LOW: 16 rods inserted — at or below minimum safe (30).
+2026-05-04T05:11:46	50	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[EMERGENCY] STEAM PRESSURE CRITICAL: Steam pressure at 7.8 MPa — rupture risk.
+2026-05-04T05:11:46	50	RiskAgent	RISK_CALC	OUTPUT	rule	ok	Risk=63/100 [CRITICAL] source=rule
+2026-05-04T05:11:46	50	DecisionAgent	DECISION	OUTPUT	rule	ok	No action required (risk=63)
+2026-05-04T05:11:48	51	Orchestrator	TICK_START	INPUT	physics	ok	Power=2854MW Rods=13 Coolant=8000 Temp=637°C Rad=0.4056
+2026-05-04T05:11:48	51	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[EMERGENCY] CONTROL RODS CRITICAL: Only 13 rods inserted — below absolute minimum of 15. IMMEDIATE SCRAM REQUIRED.
+2026-05-04T05:11:48	51	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[EMERGENCY] STEAM PRESSURE CRITICAL: Steam pressure at 7.84 MPa — rupture risk.
+2026-05-04T05:11:48	51	LLM	LLM_CALL	INPUT	llm	ok	Structured call [risk_assessment] model=pripyat-gpt4o temp=0.3
+2026-05-04T05:11:49	52	Orchestrator	TICK_START	INPUT	physics	ok	Power=2906MW Rods=11 Coolant=8000 Temp=643°C Rad=0.4206
+2026-05-04T05:11:49	52	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[EMERGENCY] CONTROL RODS CRITICAL: Only 11 rods inserted — below absolute minimum of 15. IMMEDIATE SCRAM REQUIRED.
+2026-05-04T05:11:49	52	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[EMERGENCY] STEAM PRESSURE CRITICAL: Steam pressure at 7.86 MPa — rupture risk.
+2026-05-04T05:11:49	52	LLM	LLM_CALL	INPUT	llm	ok	Structured call [risk_assessment] model=pripyat-gpt4o temp=0.3
+2026-05-04T05:11:49	52	LLM	LLM_CALL	OUTPUT	llm	ok	LLM OK [risk_assessment] latency=1989ms
+2026-05-04T05:11:49	52	RiskAgent	RISK_CALC	OUTPUT	llm	ok	Risk=100/100 [EMERGENCY] source=llm | AI: The reactor is operating with only 13 control rods inserted, far below the safe minimum of 30, while core temperature an
+2026-05-04T05:11:49	52	DecisionAgent	DECISION	DECISION	rule	ok	[EMERGENCY] AZ-5 EMERGENCY SHUTDOWN (SCRAM) (source=rule): Risk score 100/100 exceeds emergency threshold. Only 13 control rods — no shutdown margin | INSAG-7 mandates immediate shutdown under these conditions
+2026-05-04T05:11:49	52	Orchestrator	STATE_CHANGE	DECISION	rule	ok	REACTOR SCRAMMED at 2026-05-04T05:11:48
+2026-05-04T05:11:49	52	Orchestrator	STATE_CHANGE	OUTPUT	rule	warning	SCRAM NOTE: AZ-5 activated but RBMK graphite-tipped rod design causes initial reactivity surge before shutdown. Historical timeline continues — operators withdrew rods attempting power recovery despite SCRAM order.
+2026-05-04T05:11:49	52	CommsAgent	COMMS	OUTPUT	rule	ok	EMERGENCY BROADCAST — PLANT + MOSCOW: PRIORITY ALPHA — Reactor #4 emergency at 2026-05-04T05:11:48. Radiation level: 0.4056 mrem/h. Core status: UNSTABLE. Requesting: military evacuation s
+2026-05-04T05:11:49	52	LLM	LLM_CALL	OUTPUT	llm	ok	LLM OK [risk_assessment] latency=1436ms
+2026-05-04T05:11:49	52	RiskAgent	RISK_CALC	OUTPUT	llm	ok	Risk=100/100 [EMERGENCY] source=llm | AI: The reactor is operating with insufficient control rods (11 vs minimum 30), which severely compromises shutdown margin. 
+2026-05-04T05:11:49	52	DecisionAgent	DECISION	OUTPUT	rule	ok	Monitoring continues — prior actions in effect (risk=100)
+2026-05-04T05:11:49	53	Orchestrator	TICK_START	INPUT	physics	ok	Power=1883MW Rods=30 Coolant=8000 Temp=636°C Rad=0.4055
+2026-05-04T05:11:49	53	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[CRITICAL] CONTROL RODS LOW: 30 rods inserted — at or below minimum safe (30).
+2026-05-04T05:11:49	53	LLM	LLM_CALL	INPUT	llm	ok	Structured call [risk_assessment] model=pripyat-gpt4o temp=0.3
+2026-05-04T05:11:51	54	Orchestrator	TICK_START	INPUT	physics	ok	Power=1242MW Rods=46 Coolant=8000 Temp=635°C Rad=0.4054
+2026-05-04T05:11:51	54	LLM	LLM_CALL	INPUT	llm	ok	Structured call [risk_assessment] model=pripyat-gpt4o temp=0.3
+2026-05-04T05:11:51	54	LLM	LLM_CALL	OUTPUT	llm	ok	LLM OK [risk_assessment] latency=1798ms
+2026-05-04T05:11:51	54	RiskAgent	RISK_CALC	OUTPUT	llm	ok	Risk=92/100 [EMERGENCY] source=llm | AI: The reactor is operating at reduced power with only the minimum number of control rods inserted, which is a critical ris
+2026-05-04T05:11:51	54	DecisionAgent	DECISION	OUTPUT	rule	ok	Monitoring continues — prior actions in effect (risk=92)
+2026-05-04T05:11:52	55	Orchestrator	TICK_START	INPUT	physics	ok	Power=820MW Rods=62 Coolant=8000 Temp=634°C Rad=0.4053
+2026-05-04T05:11:52	55	LLM	LLM_CALL	INPUT	llm	ok	Structured call [risk_assessment] model=pripyat-gpt4o temp=0.3
+2026-05-04T05:11:52	55	LLM	LLM_CALL	OUTPUT	llm	ok	LLM OK [risk_assessment] latency=2019ms
+2026-05-04T05:11:52	55	RiskAgent	RISK_CALC	OUTPUT	llm	ok	Risk=84/100 [CRITICAL] source=llm | AI: The reactor's power has dropped significantly in a short time, which is concerning due to the RBMK's positive void coeff
+2026-05-04T05:11:52	55	DecisionAgent	DECISION	OUTPUT	rule	ok	Monitoring continues — prior actions in effect (risk=84)
+2026-05-04T05:11:54	56	Orchestrator	TICK_START	INPUT	physics	ok	Power=541MW Rods=79 Coolant=8000 Temp=633°C Rad=0.4053
+2026-05-04T05:11:54	56	LLM	LLM_CALL	INPUT	llm	ok	Structured call [risk_assessment] model=pripyat-gpt4o temp=0.3
+2026-05-04T05:11:54	56	LLM	LLM_CALL	OUTPUT	llm	ok	LLM OK [risk_assessment] latency=1621ms
+2026-05-04T05:11:54	56	RiskAgent	RISK_CALC	OUTPUT	llm	ok	Risk=76/100 [CRITICAL] source=llm | AI: The reactor is experiencing a rapid drop in power, which increases the risk of instability due to the positive void coef
+2026-05-04T05:11:54	56	DecisionAgent	DECISION	OUTPUT	rule	ok	Monitoring continues — prior actions in effect (risk=76)
+2026-05-04T05:11:54	56	LLM	LLM_CALL	OUTPUT	llm	ok	LLM OK [risk_assessment] latency=1410ms
+2026-05-04T05:11:54	56	RiskAgent	RISK_CALC	OUTPUT	llm	ok	Risk=68/100 [CRITICAL] source=llm | AI: The reactor is operating at low power with a rapid decrease in output, which could lead to xenon poisoning and unstable 
+2026-05-04T05:11:54	56	DecisionAgent	DECISION	OUTPUT	rule	ok	Monitoring continues — prior actions in effect (risk=68)
+2026-05-04T05:11:55	57	Orchestrator	TICK_START	INPUT	physics	ok	Power=357MW Rods=96 Coolant=8000 Temp=632°C Rad=0.4052
+2026-05-04T05:11:55	57	LLM	LLM_CALL	INPUT	llm	ok	Structured call [risk_assessment] model=pripyat-gpt4o temp=0.3
+2026-05-04T05:11:57	58	Orchestrator	TICK_START	INPUT	physics	ok	Power=235MW Rods=112 Coolant=8000 Temp=631°C Rad=0.4051
+2026-05-04T05:11:57	58	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[WARNING] POWER BELOW TEST TARGET: Power at 235.4 MW — below test target of 700 MW.
+2026-05-04T05:11:57	58	LLM	LLM_CALL	INPUT	llm	ok	Structured call [risk_assessment] model=pripyat-gpt4o temp=0.3
+2026-05-04T05:11:57	58	LLM	LLM_CALL	OUTPUT	llm	ok	LLM OK [risk_assessment] latency=1627ms
+2026-05-04T05:11:57	58	RiskAgent	RISK_CALC	OUTPUT	llm	ok	Risk=60/100 [CRITICAL] source=llm | AI: The reactor is operating at very low power, and the steam pressure is far below nominal levels, which increases the risk
+2026-05-04T05:11:57	58	DecisionAgent	DECISION	OUTPUT	rule	ok	Monitoring continues — prior actions in effect (risk=60)
+2026-05-04T05:11:58	59	Orchestrator	TICK_START	INPUT	physics	ok	Power=199MW Rods=128 Coolant=8000 Temp=630°C Rad=0.4050
+2026-05-04T05:11:58	59	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[CRITICAL] POWER DANGEROUSLY LOW: Power at 199.2 MW — below safe minimum of 200 MW.
+2026-05-04T05:11:58	59	LLM	LLM_CALL	INPUT	llm	ok	Structured call [risk_assessment] model=pripyat-gpt4o temp=0.3
+2026-05-04T05:11:58	59	LLM	LLM_CALL	OUTPUT	llm	ok	LLM OK [risk_assessment] latency=2095ms
+2026-05-04T05:11:58	59	RiskAgent	RISK_CALC	OUTPUT	llm	ok	Risk=52/100 [WARNING] source=llm | AI: The reactor is operating at significantly reduced power, which increases the risk of instability due to the positive voi
+2026-05-04T05:11:58	59	DecisionAgent	DECISION	OUTPUT	rule	ok	Monitoring continues — prior actions in effect (risk=52)
+2026-05-04T05:12:00	60	Orchestrator	TICK_START	INPUT	physics	ok	Power=199MW Rods=145 Coolant=8000 Temp=629°C Rad=0.4049
+2026-05-04T05:12:00	60	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[CRITICAL] POWER DANGEROUSLY LOW: Power at 199.1 MW — below safe minimum of 200 MW.
+2026-05-04T05:12:00	60	LLM	LLM_CALL	INPUT	llm	ok	Structured call [risk_assessment] model=pripyat-gpt4o temp=0.3
+2026-05-04T05:12:00	60	LLM	LLM_CALL	OUTPUT	llm	ok	LLM OK [risk_assessment] latency=1776ms
+2026-05-04T05:12:00	60	RiskAgent	RISK_CALC	OUTPUT	llm	ok	Risk=56/100 [WARNING] source=llm | AI: The reactor is operating at dangerously low power levels where the positive void coefficient can cause instability. The 
+2026-05-04T05:12:00	60	DecisionAgent	DECISION	OUTPUT	rule	ok	Monitoring continues — prior actions in effect (risk=56)
+2026-05-04T05:12:01	61	Orchestrator	TICK_START	INPUT	physics	ok	Power=199MW Rods=162 Coolant=8000 Temp=628°C Rad=0.4048
+2026-05-04T05:12:01	61	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[CRITICAL] POWER DANGEROUSLY LOW: Power at 199.0 MW — below safe minimum of 200 MW.
+2026-05-04T05:12:01	61	LLM	LLM_CALL	INPUT	llm	ok	Structured call [risk_assessment] model=pripyat-gpt4o temp=0.3
+2026-05-04T05:12:01	61	LLM	LLM_CALL	OUTPUT	llm	ok	LLM OK [risk_assessment] latency=1670ms
+2026-05-04T05:12:01	61	RiskAgent	RISK_CALC	OUTPUT	llm	ok	Risk=48/100 [WARNING] source=llm | AI: The reactor is operating at dangerously low power levels, which increases the risk of instability due to the positive vo
+2026-05-04T05:12:01	61	DecisionAgent	DECISION	OUTPUT	rule	ok	Monitoring continues — prior actions in effect (risk=48)
+2026-05-04T05:12:03	62	Orchestrator	TICK_START	INPUT	physics	ok	Power=199MW Rods=178 Coolant=8000 Temp=627°C Rad=0.4048
+2026-05-04T05:12:03	62	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[CRITICAL] POWER DANGEROUSLY LOW: Power at 198.9 MW — below safe minimum of 200 MW.
+2026-05-04T05:12:03	62	LLM	LLM_CALL	INPUT	llm	ok	Structured call [risk_assessment] model=pripyat-gpt4o temp=0.3
+2026-05-04T05:12:03	62	LLM	LLM_CALL	OUTPUT	llm	ok	LLM OK [risk_assessment] latency=1997ms
+2026-05-04T05:12:03	62	RiskAgent	RISK_CALC	OUTPUT	llm	ok	Risk=40/100 [WARNING] source=llm | AI: The reactor is operating at dangerously low power levels, which increases the risk of instability due to the positive vo
+2026-05-04T05:12:03	62	DecisionAgent	DECISION	OUTPUT	rule	ok	Monitoring continues — prior actions in effect (risk=40)
+2026-05-04T05:12:04	63	Orchestrator	TICK_START	INPUT	physics	ok	Power=199MW Rods=194 Coolant=8000 Temp=626°C Rad=0.4047
+2026-05-04T05:12:04	63	LLM	LLM_CALL	INPUT	llm	ok	Structured call [risk_assessment] model=pripyat-gpt4o temp=0.3
+2026-05-04T05:12:04	63	LLM	LLM_CALL	OUTPUT	llm	ok	LLM OK [risk_assessment] latency=2062ms
+2026-05-04T05:12:04	63	RiskAgent	RISK_CALC	OUTPUT	llm	ok	Risk=32/100 [WARNING] source=llm | AI: While control rods are sufficiently inserted and ECCS is active, the reactor is operating at dangerously low power level
+2026-05-04T05:12:04	63	DecisionAgent	DECISION	OUTPUT	rule	ok	Monitoring continues — prior actions in effect (risk=32)
+2026-05-04T05:12:06	64	Orchestrator	TICK_START	INPUT	physics	ok	Power=199MW Rods=211 Coolant=8000 Temp=625°C Rad=0.4046
+2026-05-04T05:12:06	64	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[×1 ticks 62–63] [CRITICAL] POWER DANGEROUSLY LOW: Power at 198.9 MW — below safe minimum of 200 MW.
+2026-05-04T05:12:06	64	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[CRITICAL] POWER DANGEROUSLY LOW: Power at 198.8 MW — below safe minimum of 200 MW.
+2026-05-04T05:12:06	64	LLM	LLM_CALL	INPUT	llm	ok	Structured call [risk_assessment] model=pripyat-gpt4o temp=0.3
+2026-05-04T05:12:06	64	LLM	LLM_CALL	OUTPUT	llm	ok	LLM OK [risk_assessment] latency=2293ms
+2026-05-04T05:12:06	64	RiskAgent	RISK_CALC	OUTPUT	llm	ok	Risk=24/100 [NORMAL] source=llm | AI: The reactor is operating at dangerously low power levels, which increases the risk of Xenon poisoning and instability du
+2026-05-04T05:12:06	64	DecisionAgent	DECISION	OUTPUT	rule	ok	Monitoring continues — prior actions in effect (risk=24)
+2026-05-04T05:12:07	65	Orchestrator	TICK_START	INPUT	physics	ok	Power=199MW Rods=211 Coolant=8000 Temp=624°C Rad=0.4045
+2026-05-04T05:12:07	65	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[CRITICAL] POWER DANGEROUSLY LOW: Power at 198.7 MW — below safe minimum of 200 MW.
+2026-05-04T05:12:07	65	RiskAgent	RISK_CALC	OUTPUT	rule	ok	Risk=16/100 [NORMAL] source=rule
+2026-05-04T05:12:07	65	DecisionAgent	DECISION	OUTPUT	rule	ok	Monitoring continues — prior actions in effect (risk=16)
+2026-05-04T05:12:07	65	LLM	LLM_CALL	OUTPUT	llm	ok	LLM OK [risk_assessment] latency=2344ms
+2026-05-04T05:12:07	65	RiskAgent	RISK_CALC	OUTPUT	llm	ok	Risk=21/100 [NORMAL] source=llm | AI: The reactor is operating at dangerously low power levels, which increases the risk of instability due to the positive vo
+2026-05-04T05:12:07	65	DecisionAgent	DECISION	OUTPUT	rule	ok	Monitoring continues — prior actions in effect (risk=21)
+2026-05-04T05:12:09	66	Orchestrator	TICK_START	INPUT	physics	ok	Power=199MW Rods=211 Coolant=8000 Temp=624°C Rad=0.4044
+2026-05-04T05:12:09	66	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[CRITICAL] POWER DANGEROUSLY LOW: Power at 198.6 MW — below safe minimum of 200 MW.
+2026-05-04T05:12:09	66	RiskAgent	RISK_CALC	OUTPUT	rule	ok	Risk=13/100 [NORMAL] source=rule
+2026-05-04T05:12:09	66	DecisionAgent	DECISION	OUTPUT	rule	ok	Monitoring continues — prior actions in effect (risk=13)
+2026-05-04T05:12:10	67	Orchestrator	TICK_START	INPUT	physics	ok	Power=198MW Rods=211 Coolant=8000 Temp=623°C Rad=0.4043
+2026-05-04T05:12:10	67	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[CRITICAL] POWER DANGEROUSLY LOW: Power at 198.5 MW — below safe minimum of 200 MW.
+2026-05-04T05:12:10	67	RiskAgent	RISK_CALC	OUTPUT	rule	ok	Risk=12/100 [NORMAL] source=rule
+2026-05-04T05:12:10	67	DecisionAgent	DECISION	OUTPUT	rule	ok	Monitoring continues — prior actions in effect (risk=12)
+2026-05-04T05:12:12	68	Orchestrator	TICK_START	INPUT	physics	ok	Power=198MW Rods=211 Coolant=8000 Temp=622°C Rad=0.4043
+2026-05-04T05:12:12	68	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[CRITICAL] POWER DANGEROUSLY LOW: Power at 198.4 MW — below safe minimum of 200 MW.
+2026-05-04T05:12:13	69	Orchestrator	TICK_START	INPUT	physics	ok	Power=198MW Rods=211 Coolant=8000 Temp=621°C Rad=0.4042
+2026-05-04T05:12:15	70	Orchestrator	TICK_START	INPUT	physics	ok	Power=198MW Rods=211 Coolant=8000 Temp=620°C Rad=0.4041
+2026-05-04T05:12:15	70	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[×1 ticks 68–69] [CRITICAL] POWER DANGEROUSLY LOW: Power at 198.4 MW — below safe minimum of 200 MW.
+2026-05-04T05:12:15	70	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[CRITICAL] POWER DANGEROUSLY LOW: Power at 198.3 MW — below safe minimum of 200 MW.
+2026-05-04T05:12:16	71	Orchestrator	TICK_START	INPUT	physics	ok	Power=198MW Rods=211 Coolant=8000 Temp=619°C Rad=0.4040
+2026-05-04T05:12:16	71	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[CRITICAL] POWER DANGEROUSLY LOW: Power at 198.2 MW — below safe minimum of 200 MW.
+2026-05-04T05:12:18	72	Orchestrator	TICK_START	INPUT	physics	ok	Power=198MW Rods=211 Coolant=8000 Temp=618°C Rad=0.4039
+2026-05-04T05:12:18	72	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[CRITICAL] POWER DANGEROUSLY LOW: Power at 198.1 MW — below safe minimum of 200 MW.
+2026-05-04T05:12:19	73	Orchestrator	TICK_START	INPUT	physics	ok	Power=198MW Rods=211 Coolant=8000 Temp=617°C Rad=0.4038
+2026-05-04T05:12:19	73	SensorAgent	SENSOR_ALERT	OUTPUT	rule	ok	[CRITICAL] POWER DANGEROUSLY LOW: Power at 198.0 MW — below safe minimum of 200 MW.
+2026-05-04T05:12:21	74	Orchestrator	TICK_START	INPUT	physics	ok	Power=198MW Rods=211 Coolant=8000 Temp=616°C Rad=0.4037

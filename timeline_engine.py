@@ -121,6 +121,8 @@ class DualTimelineEngine:
                 "actual_decision": tick_summary["actual_decision"],
                 "counterfactual": tick_summary["counterfactual"],
                 "dyatlov": tick_summary["dyatlov"],
+                "llm_stats": tick_summary.get("llm_stats", {}),
+                "audit_log": tick_summary.get("audit_log", []),
                 "state": {
                     **tick_summary["state"],
                     "intervention_enabled": self.intervention_enabled,

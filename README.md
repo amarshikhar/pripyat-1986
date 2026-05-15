@@ -241,6 +241,6 @@ MIT — use freely for research, education, and commercial applications.
 
 ---
 
-## Author
+## Author:WattAgents
 
 **Shikhar Amar** — [GitHub](https://github.com/amarshikhar)

@@ -28,7 +28,7 @@
     <div class="controls">
         <button class="btn play-btn" id="playBtn" onclick="togglePlay()">PLAY</button>
         <button class="btn stop-btn" id="stopBtn" onclick="stopSim()">STOP</button>
-        <button class="btn" onclick="resetSim()">RESET</button>
+        <button class="btn" id="resetBtn" onclick="resetSim()">RESET</button>
 
         <div class="control-group">
             <span class="control-label">Speed</span>
@@ -43,6 +43,10 @@
             <div class="toggle on" id="interventionToggle" onclick="toggleIntervention()">
                 <div class="toggle-knob"></div>
             </div>
+        </div>
+
+        <div class="control-group">
+            <button class="btn manual-btn" id="manualBtn" onclick="toggleManualMode()">MANUAL</button>
         </div>
     </div>
 
@@ -78,6 +82,36 @@
 
         <!-- Right Panel -->
         <div class="right-panel">
+            <!-- Manual Control Panel (hidden by default) -->
+            <div class="manual-panel" id="manualPanel" style="display:none">
+                <div class="panel-title manual-panel-title">&#9881; MANUAL CONTROL <span class="manual-badge" id="manualBadge">ACTIVE</span></div>
+                <div class="manual-control">
+                    <label>Control Rods</label>
+                    <input type="range" id="rodsSlider" min="0" max="211" value="100"
+                           oninput="onManualSliderChange()">
+                    <span class="manual-val" id="rodsVal">100</span>
+                </div>
+                <div class="manual-control">
+                    <label>Coolant Flow</label>
+                    <input type="range" id="coolantSlider" min="0" max="8000" step="100" value="8000"
+                           oninput="onManualSliderChange()">
+                    <span class="manual-val" id="coolantVal">8000</span>
+                </div>
+                <div class="manual-control">
+                    <label>ECCS</label>
+                    <div class="toggle on" id="eccsToggle" onclick="toggleECCS()">
+                        <div class="toggle-knob"></div>
+                    </div>
+                    <span class="manual-val" id="eccsVal">ON</span>
+                </div>
+                <div class="manual-derived">
+                    <div class="derived-row"><span>Power</span><span id="derivedPower">—</span><span>MW</span></div>
+                    <div class="derived-row"><span>Temp</span><span id="derivedTemp">—</span><span>&deg;C</span></div>
+                    <div class="derived-row"><span>Steam</span><span id="derivedSteam">—</span><span>MPa</span></div>
+                    <div class="derived-row"><span>Radiation</span><span id="derivedRad">—</span><span>mrem/h</span></div>
+                </div>
+            </div>
+
             <div class="risk-section">
                 <div class="panel-title">Risk Assessment</div>
                 <div class="risk-score normal" id="riskScore">0</div>
@@ -101,6 +135,12 @@
                     <div class="pipeline-arrow">&rarr;</div>
                     <div class="pipeline-node" id="pipeC" title="Comms Agent">C</div>
                 </div>
+                <div class="llm-status" id="llmStatus">
+                    <span class="llm-indicator" id="llmIndicator">&#9679;</span>
+                    <span id="llmLabel">LLM: --</span>
+                    <span class="llm-calls" id="llmCalls">Calls: 0</span>
+                    <span class="llm-latency" id="llmLatency">Avg: --ms</span>
+                </div>
             </div>
 
             <div class="dyatlov-section" id="dyatlovSection">
@@ -110,10 +150,6 @@
                     <div class="dyatlov-phase-desc" id="dyatlovPhaseDesc">Supervising test preparations</div>
                 </div>
                 <div class="dyatlov-chat-log" id="dyatlovChatLog">
-                    <div class="dyatlov-chat-entry">
-                        <span class="dyatlov-chat-time">23:00:00</span>
-                        <span class="dyatlov-chat-text">"The test has been delayed long enough. We run it tonight."</span>
-                    </div>
                 </div>
                 <div class="dyatlov-pressure-row">
                     <span class="dyatlov-label">Pressure</span>
@@ -175,6 +211,37 @@
                         </div>
                     </div>
                 </div>
+            </div>
+        </div>
+
+        <!-- Audit Log Panel -->
+        <div class="audit-log-section">
+            <div class="audit-log-header">
+                <div class="panel-title audit-log-title">&#128196; SYSTEM AUDIT LOG</div>
+                <div class="audit-log-controls">
+                    <span class="audit-log-count" id="auditLogCount">0 entries</span>
+                    <button class="btn audit-copy-btn" id="auditCopyBtn" onclick="copyAuditLog()" title="Copy all logs to clipboard">COPY LOG</button>
+                    <button class="btn audit-clear-btn" id="auditClearBtn" onclick="clearAuditLog()" title="Clear log display">CLEAR</button>
+                </div>
+            </div>
+            <div class="audit-log-table-wrap" id="auditLogWrap">
+                <table class="audit-log-table">
+                    <thead>
+                        <tr>
+                            <th>Timestamp</th>
+                            <th>Tick</th>
+                            <th>Agent</th>
+                            <th>Type</th>
+                            <th>Dir</th>
+                            <th>Source</th>
+                            <th>Status</th>
+                            <th>Detail</th>
+                        </tr>
+                    </thead>
+                    <tbody id="auditLogBody">
+                        <tr class="audit-empty-row"><td colspan="8" class="empty-state">Waiting for simulation to start...</td></tr>
+                    </tbody>
+                </table>
             </div>
         </div>
     </div>

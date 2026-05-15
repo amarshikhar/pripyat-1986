@@ -1,3 +1,10 @@
+import os
+if os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING"):
+    try:
+        from azure.monitor.opentelemetry import configure_azure_monitor
+        configure_azure_monitor()
+    except Exception:
+        pass
 """
 PRIPYAT-1986 Shared LLM Client
 Centralized OpenAI/Azure OpenAI client with structured output support.
@@ -10,11 +17,15 @@ Azure Migration:
 - Structured outputs work identically on Azure OpenAI
 """
 
+import asyncio
 import json
+import logging
 import time
 from typing import Optional
 
 from config import LLM_CONFIG
+
+logger = logging.getLogger("pripyat.llm")
 
 
 class LLMClient:
@@ -23,15 +34,22 @@ class LLMClient:
     Uses OpenAI structured outputs for guaranteed valid JSON.
     """
 
-    def __init__(self):
+    def __init__(self, audit=None):
         self.client = None
         self.call_count = 0
         self.total_latency_ms = 0
+        self.fail_count = 0
+        self._last_call_ok = False
+        self._last_call_time = None
+        self.audit = audit  # AuditLogger instance (optional)
+        # Limit concurrent LLM calls to avoid Azure 429 rate limiting
+        self._semaphore = asyncio.Semaphore(2)
         self._init_client()
 
     def _init_client(self):
         """Initialize OpenAI or Azure OpenAI client."""
         if not LLM_CONFIG["api_key"] or not LLM_CONFIG["enabled"]:
+            logger.warning("LLM DISABLED — api_key=%s, enabled=%s", bool(LLM_CONFIG["api_key"]), LLM_CONFIG["enabled"])
             return
         try:
             if LLM_CONFIG["use_azure"]:
@@ -50,6 +68,7 @@ class LLMClient:
                     base_url=LLM_CONFIG["base_url"],
                     timeout=LLM_CONFIG["timeout_s"],
                     max_retries=LLM_CONFIG["max_retries"],
+                    default_headers={"HTTP-Referer": "https://pripyat-1986.app", "X-Title": "PRIPYAT-1986"},
                 )
         except ImportError:
             pass
@@ -57,6 +76,10 @@ class LLMClient:
     @property
     def available(self) -> bool:
         return self.client is not None
+
+    @property
+    def last_call_success(self) -> bool:
+        return self._last_call_ok
 
     @property
     def avg_latency_ms(self) -> float:
@@ -80,34 +103,70 @@ class LLMClient:
         if not self.available:
             return None
 
-        try:
-            start = time.monotonic()
-            response = await self.client.chat.completions.create(
-                model=LLM_CONFIG["model"],
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": schema_name,
-                        "strict": True,
-                        "schema": schema,
-                    },
-                },
-                temperature=temperature,
-                max_tokens=max_tokens,
+        # Audit: log LLM input
+        if self.audit:
+            self.audit.log(
+                agent="LLM", log_type="LLM_CALL", direction="INPUT",
+                detail=f"Structured call [{schema_name}] model={LLM_CONFIG['model']} temp={temperature}",
+                source="llm", status="ok",
+                data={"schema_name": schema_name, "user_prompt": user_prompt[:500], "temperature": temperature, "max_tokens": max_tokens},
             )
-            elapsed_ms = (time.monotonic() - start) * 1000
-            self.call_count += 1
-            self.total_latency_ms += elapsed_ms
 
-            content = response.choices[0].message.content
-            return json.loads(content)
+        # Build required-fields hint so the model knows what keys to return
+        required_keys = schema.get("required", list(schema.get("properties", {}).keys()))
+        schema_hint = (
+            f"\n\nRespond with valid JSON only. Required keys: {required_keys}."
+        )
+        augmented_system = system_prompt + schema_hint
 
-        except Exception:
-            return None
+        async with self._semaphore:
+            try:
+                start = time.monotonic()
+                logger.info("LLM CALL [json_object/%s] schema=%s", LLM_CONFIG["model"], schema_name)
+                response = await self.client.chat.completions.create(
+                    model=LLM_CONFIG["model"],
+                    messages=[
+                        {"role": "system", "content": augmented_system},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                elapsed_ms = (time.monotonic() - start) * 1000
+                self.call_count += 1
+                self.total_latency_ms += elapsed_ms
+                self._last_call_ok = True
+                self._last_call_time = time.time()
+
+                content = response.choices[0].message.content
+                logger.info("LLM OK [%s] latency=%.0fms", schema_name, elapsed_ms)
+                parsed = json.loads(content)
+
+                # Audit: log LLM output
+                if self.audit:
+                    self.audit.log(
+                        agent="LLM", log_type="LLM_CALL", direction="OUTPUT",
+                        detail=f"LLM OK [{schema_name}] latency={elapsed_ms:.0f}ms",
+                        source="llm", status="ok",
+                        data={"schema_name": schema_name, "latency_ms": round(elapsed_ms), "response": parsed},
+                    )
+
+                return parsed
+
+            except Exception as e:
+                self.fail_count += 1
+                self._last_call_ok = False
+                logger.error("LLM FAIL [%s]: %s", schema_name, str(e)[:120])
+                # Audit: log LLM failure
+                if self.audit:
+                    self.audit.log(
+                        agent="LLM", log_type="LLM_CALL", direction="OUTPUT",
+                        detail=f"LLM FAIL [{schema_name}]: {str(e)[:120]}",
+                        source="llm", status="fail",
+                        data={"schema_name": schema_name, "error": str(e)[:200]},
+                    )
+                return None
 
     async def call_text(
         self,
@@ -125,6 +184,7 @@ class LLMClient:
 
         try:
             start = time.monotonic()
+            logger.info("LLM CALL [text/%s]", LLM_CONFIG["model"])
             response = await self.client.chat.completions.create(
                 model=LLM_CONFIG["model"],
                 messages=[
@@ -137,10 +197,16 @@ class LLMClient:
             elapsed_ms = (time.monotonic() - start) * 1000
             self.call_count += 1
             self.total_latency_ms += elapsed_ms
+            self._last_call_ok = True
+            self._last_call_time = time.time()
 
+            logger.info("LLM OK [text] latency=%.0fms", elapsed_ms)
             return response.choices[0].message.content
 
-        except Exception:
+        except Exception as e:
+            self.fail_count += 1
+            self._last_call_ok = False
+            logger.error("LLM FAIL [text]: %s", str(e)[:120])
             return None
 
     def get_stats(self) -> dict:
@@ -148,8 +214,19 @@ class LLMClient:
         return {
             "llm_available": self.available,
             "total_calls": self.call_count,
+            "total_failures": self.fail_count,
             "avg_latency_ms": round(self.avg_latency_ms, 1),
+            "last_call_ok": self._last_call_ok,
+            "last_call_time": self._last_call_time,
         }
+
+    def reset_stats(self):
+        """Reset call counters (used on manual mode reset)."""
+        self.call_count = 0
+        self.total_latency_ms = 0
+        self.fail_count = 0
+        self._last_call_ok = False
+        self._last_call_time = None
 
 
 # ── Structured Output Schemas ─────────────────────────────────────

@@ -133,6 +133,71 @@ def compute_test_abort(state: ReactorState, elapsed_s: float) -> ReactorState:
     )
 
 
+def compute_manual_state(control_rods: int, coolant_flow: float, eccs_active: bool) -> ReactorState:
+    """
+    Compute reactor state from operator control inputs using simplified RBMK physics.
+
+    Inputs (what an operator actually controls):
+    - control_rods: Number of rods inserted (0-211). Fewer rods = more reactivity.
+    - coolant_flow: Primary coolant flow in m³/h (0-8000).
+    - eccs_active: Emergency Core Cooling System on/off.
+
+    Returns a ReactorState with derived telemetry (power, temp, pressure, radiation).
+    """
+    from datetime import datetime
+
+    # Clamp inputs
+    rods = max(0, min(TOTAL_RODS, int(control_rods)))
+    coolant = max(0.0, min(NOMINAL_COOLANT_FLOW, float(coolant_flow)))
+    eccs = bool(eccs_active)
+
+    # Power: nonlinear reactivity from rod position
+    # P = 3200 × (1 - rods/211)^1.8 — fewer rods = exponentially more power
+    rod_fraction = rods / TOTAL_RODS
+    power = 3200.0 * math.pow(max(0.0, 1.0 - rod_fraction), 1.8)
+
+    # Temperature: heat balance — power heats the core, coolant removes heat
+    # T = 280 + (P/3200) × 400 × (8000 / max(coolant, 100))
+    effective_coolant = max(coolant, 100.0)  # Prevent division by near-zero
+    temperature = 280.0 + (power / 3200.0) * 400.0 * (NOMINAL_COOLANT_FLOW / effective_coolant)
+
+    # Steam pressure: follows temperature (simplified saturation curve)
+    # At nominal 280°C → 6.5 MPa, scales with power fraction (not temp directly)
+    # SP = 6.5 + 1.5 × (P/3200) — linear rise, reaches ~8.0 at full power
+    steam_pressure = 6.5 + 1.5 * (power / 3200.0)
+
+    # Radiation: proportional to power squared, spikes if rods critically low
+    # R = 0.01 × (P/3200)^2 × (1 + 50×(rods<15))
+    power_ratio = power / 3200.0
+    rod_spike = 50.0 if rods < 15 else 0.0
+    radiation = 0.01 * (power_ratio ** 2) * (1.0 + rod_spike)
+
+    # ECCS off: core loses backup cooling → temperature rises, radiation increases
+    if not eccs:
+        temperature *= 1.15
+        radiation *= 3.0
+
+    # Clamp to reasonable ranges
+    power = round(min(power, 50000.0), 1)  # Allow supercritical for dramatic effect
+    temperature = round(min(temperature, 5000.0), 1)
+    steam_pressure = round(min(steam_pressure, 20.0), 2)
+    radiation = round(min(radiation, 100000.0), 4)
+
+    return ReactorState(
+        timestamp=datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+        power_mw=power,
+        control_rods_inserted=rods,
+        coolant_flow_m3h=round(coolant, 1),
+        steam_pressure_mpa=steam_pressure,
+        temperature_c=temperature,
+        radiation_mrem_h=radiation,
+        eccs_active=eccs,
+        event_description=None,
+        actual_human_decision=None,
+        tags=["manual"],
+    )
+
+
 def compute_evacuation_progress(elapsed_s: float) -> dict:
     """
     Compute evacuation progress given time elapsed since order.

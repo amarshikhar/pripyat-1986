@@ -196,6 +196,7 @@ class RiskAgent:
     """
 
     name = "RiskAgent"
+    LLM_COOLDOWN_TICKS = 5  # Min ticks between LLM calls when alerts persist
 
     def __init__(self, llm_client: Optional['LLMClient'] = None):
         self.current_score = 0
@@ -203,20 +204,63 @@ class RiskAgent:
         self.previous_state: Optional[ReactorState] = None
         self.llm = llm_client
         self.last_llm_reasoning: Optional[str] = None
+        self._last_llm_tick: int = -999  # Last tick we called LLM
+        self._last_alert_level: Optional[AlertLevel] = None  # Track alert escalation
+        self._evacuation_done: bool = False  # Stop LLM after evacuation ordered
 
-    def _is_decision_point(self, state: ReactorState, rule_score: int) -> bool:
+    def _is_decision_point(self, state: ReactorState, rule_score: int,
+                            sensor_alerts: list[AgentMessage] = None) -> bool:
         """Determine if this tick warrants an LLM call."""
         if not LLM_CONFIG.get("decision_points_only", True):
             return True
-        # Real timeline event (not interpolation)
+        # Post-evacuation: no LLM needed, rules suffice for monitoring
+        if self._evacuation_done:
+            return False
+        # Skip LLM calls entirely for manual-mode ticks (including post-SCRAM)
+        if state.tags and "manual" in state.tags:
+            # Post-SCRAM: physics drives decay — LLM would inflate the score
+            if "scram" in state.tags:
+                return False
+            prev_score = self.score_history[-1][1] if self.score_history else 0
+            for boundary in [30, 60, 85]:
+                if (prev_score < boundary <= rule_score) or (rule_score < boundary <= prev_score):
+                    return True
+            return False
+        # Real timeline event (tagged in INSAG-7 data) — ALWAYS call LLM
         if state.tags:
             return True
         if state.event_description:
             return True
+        # ── Interpolated ticks below: apply global cooldown ──
+        current_tick = len(self.score_history) + 1
+        within_cooldown = (current_tick - self._last_llm_tick) < self.LLM_COOLDOWN_TICKS
+        # Alert level escalation overrides cooldown
+        if sensor_alerts:
+            has_emergency = any(a.alert_level == AlertLevel.EMERGENCY for a in sensor_alerts)
+            has_critical = any(
+                a.alert_level in (AlertLevel.CRITICAL, AlertLevel.EMERGENCY)
+                for a in sensor_alerts
+            )
+            if has_critical:
+                max_level = AlertLevel.EMERGENCY if has_emergency else AlertLevel.CRITICAL
+                # Escalation to a NEW severity level always triggers
+                if self._last_alert_level != max_level:
+                    return True
+        # If within cooldown, skip everything else
+        if within_cooldown:
+            return False
         # Risk score crossed a threshold boundary
         prev_score = self.score_history[-1][1] if self.score_history else 0
         for boundary in [30, 60, 85]:
             if (prev_score < boundary <= rule_score) or (rule_score < boundary <= prev_score):
+                return True
+        # CRITICAL/EMERGENCY alerts — call at cooldown interval
+        if sensor_alerts:
+            has_critical = any(
+                a.alert_level in (AlertLevel.CRITICAL, AlertLevel.EMERGENCY)
+                for a in sensor_alerts
+            )
+            if has_critical:
                 return True
         return False
 
@@ -226,9 +270,18 @@ class RiskAgent:
         w = RISK_CONFIG["weights"]
         scores = {}
 
+        # After SCRAM, low power / high rods is the DESIRED safe state
+        post_scram = state.tags and "scram" in state.tags
+
         # Power anomaly score
         power = state.power_mw
-        if power <= t["power_mw"]["critical_low"]:
+        if post_scram:
+            # After SCRAM: power dropping is good. Only worry about unexpected surges.
+            if power > 500 and state.control_rods_inserted < 30:
+                scores["power_anomaly"] = 100  # Power NOT dropping = real danger
+            else:
+                scores["power_anomaly"] = 0  # Decaying power = expected
+        elif power <= t["power_mw"]["critical_low"]:
             scores["power_anomaly"] = 100
         elif power <= t["power_mw"]["danger_low"]:
             scores["power_anomaly"] = 80
@@ -238,12 +291,15 @@ class RiskAgent:
             scores["power_anomaly"] = max(0, (t["power_mw"]["nominal"] - power) / t["power_mw"]["nominal"] * 20)
 
         # Surge detection (power going UP uncontrollably)
-        if power > 500 and state.control_rods_inserted < 15:
+        if not post_scram and power > 500 and state.control_rods_inserted < 15:
             scores["power_anomaly"] = 100
 
         # Rod position score
         rods = state.control_rods_inserted
-        if rods <= t["control_rods"]["critical_low"]:
+        if post_scram:
+            # After SCRAM: rods driving to 211 is correct behavior
+            scores["rod_position"] = 0
+        elif rods <= t["control_rods"]["critical_low"]:
             scores["rod_position"] = 100
         elif rods <= t["control_rods"]["minimum_safe"]:
             scores["rod_position"] = 70
@@ -291,11 +347,23 @@ class RiskAgent:
         # ECCS penalty — adds 15 points if disabled
         eccs_penalty = 15 if not state.eccs_active else 0
 
+        # Rate-of-change penalty: rapid power decline toward danger zone
+        rate_penalty = 0
+        if self.previous_state and not post_scram:
+            power_delta = state.power_mw - self.previous_state.power_mw
+            # Penalize rapid power drop when already below test target
+            if power_delta < -20 and state.power_mw < t["power_mw"]["test_target"]:
+                rate_penalty = min(20, abs(power_delta) / 3)
+            # Extra penalty for rod withdrawal during power decline
+            rod_delta = state.control_rods_inserted - self.previous_state.control_rods_inserted
+            if rod_delta < 0 and state.power_mw < t["power_mw"]["danger_low"]:
+                rate_penalty += min(10, abs(rod_delta) * 2)
+
         # Compound violation multiplier
         violations = sum(1 for s in scores.values() if s >= 60)
         compound_mult = 1.0 + (violations * 0.15)
 
-        raw = sum(scores.get(k, 0) * v for k, v in w.items()) + eccs_penalty
+        raw = sum(scores.get(k, 0) * v for k, v in w.items()) + eccs_penalty + rate_penalty
         total = raw * compound_mult
         rule_score = min(100, round(total))
 
@@ -360,8 +428,16 @@ class RiskAgent:
         ai_reasoning = None
         llm_data = None
 
-        if self._is_decision_point(state, rule_score):
+        if self._is_decision_point(state, rule_score, sensor_alerts):
             llm_data = await self._llm_risk_assessment(state, rule_score, scores, sensor_alerts)
+            if llm_data:
+                # Track cooldown state
+                self._last_llm_tick = len(self.score_history) + 1
+                if sensor_alerts:
+                    levels = [a.alert_level for a in sensor_alerts
+                              if a.alert_level in (AlertLevel.CRITICAL, AlertLevel.EMERGENCY)]
+                    _severity = {AlertLevel.CRITICAL: 1, AlertLevel.EMERGENCY: 2}
+                    self._last_alert_level = max(levels, key=lambda l: _severity.get(l, 0), default=None) if levels else None
 
         if llm_data:
             # Blend: 70% AI + 30% rule-based
@@ -373,6 +449,20 @@ class RiskAgent:
         else:
             self.current_score = rule_score
             self.last_llm_reasoning = None
+
+        # Asymmetric EMA smoothing — applied to ALL ticks so the score never zigzags.
+        # Risk rises quickly (danger must be visible fast) but falls slowly (recovery is gradual).
+        # Post-SCRAM: fast decay — physics is already shutting down the reactor.
+        if self.score_history:
+            prev_score = self.score_history[-1][1]
+            post_scram_ema = bool(state.tags and "scram" in state.tags)
+            if self.current_score > prev_score:
+                alpha = 0.45  # Rising: react to escalation within ~2 ticks
+            elif post_scram_ema:
+                alpha = 0.40  # Post-SCRAM falling: reach normal in ~5 ticks
+            else:
+                alpha = 0.15  # Normal falling: gradual recovery over ~15 ticks
+            self.current_score = round(alpha * self.current_score + (1 - alpha) * prev_score)
 
         self.score_history.append((state.timestamp, self.current_score))
         self.previous_state = state
@@ -450,27 +540,57 @@ class DecisionAgent:
     """
 
     name = "DecisionAgent"
+    LLM_COOLDOWN_TICKS = 5  # Min ticks between LLM calls when alerts persist
 
     def __init__(self, llm_client: Optional['LLMClient'] = None):
         self.decisions: list[AgentAction] = []
         self.reactor_scrammed = False
         self.evacuation_ordered = False
         self.llm = llm_client
+        self._last_llm_tick: int = -999
+        self._last_alert_level: Optional[AlertLevel] = None
 
-    def _is_decision_point(self, state: ReactorState, risk_score: int) -> bool:
+    def _is_decision_point(self, state: ReactorState, risk_score: int,
+                            sensor_alerts: list[AgentMessage] = None) -> bool:
         """Determine if this tick warrants an LLM decision call."""
         if not LLM_CONFIG.get("decision_points_only", True):
             return True
+        # Skip LLM in manual mode (including post-SCRAM decay)
+        if state.tags and "manual" in state.tags:
+            return False
+        # Real timeline event (not interpolation) — ALWAYS call LLM
         if state.tags:
             return True
         if state.event_description:
             return True
-        # Risk above warning threshold
+        # Risk above warning threshold — with cooldown to avoid flooding
         if risk_score >= RISK_CONFIG["warning_threshold"]:
-            return True
+            if self._ticks_since_last_llm() >= self.LLM_COOLDOWN_TICKS:
+                return True
+            return False
+        # CRITICAL or EMERGENCY sensor alerts — with cooldown
+        if sensor_alerts:
+            crisis_levels = [
+                a.alert_level for a in sensor_alerts
+                if a.alert_level in (AlertLevel.CRITICAL, AlertLevel.EMERGENCY)
+            ]
+            if crisis_levels:
+                _severity = {AlertLevel.CRITICAL: 1, AlertLevel.EMERGENCY: 2}
+                max_level = max(crisis_levels, key=lambda l: _severity.get(l, 0))
+                # Call on first occurrence or level escalation
+                if self._last_alert_level != max_level:
+                    return True
+                # Cooldown: don't call LLM every tick
+                if self._ticks_since_last_llm() >= self.LLM_COOLDOWN_TICKS:
+                    return True
         return False
 
-    def _rule_based_actions(self, state: ReactorState, risk_score: int) -> list[AgentAction]:
+    def _ticks_since_last_llm(self) -> int:
+        """How many decisions have been made since last LLM call."""
+        return len(self.decisions) - self._last_llm_tick if self._last_llm_tick >= 0 else 999
+
+    def _rule_based_actions(self, state: ReactorState, risk_score: int,
+                            sensor_alerts: list[AgentMessage] = None) -> list[AgentAction]:
         """Safety guardrails — these ALWAYS run and cannot be overridden."""
         actions = []
         counterfactual = AI_COUNTERFACTUAL_DECISIONS.get(state.timestamp)
@@ -492,7 +612,32 @@ class DecisionAgent:
                 },
             ))
 
-        # GUARDRAIL 2: Evacuate if radiation is dangerous
+        # GUARDRAIL 2: Compound violation — EMERGENCY sensor alert + ECCS disabled = auto-SCRAM
+        if not self.reactor_scrammed and not state.eccs_active and sensor_alerts:
+            has_emergency = any(
+                a.alert_level == AlertLevel.EMERGENCY
+                for a in sensor_alerts
+            )
+            if has_emergency:
+                actions.append(AgentAction(
+                    agent=self.name,
+                    timestamp=state.timestamp,
+                    action="AZ-5 EMERGENCY SHUTDOWN (SCRAM)",
+                    reasoning=(
+                        f"Compound violation: EMERGENCY sensor alert with ECCS disabled. "
+                        f"No safety barriers remain. INSAG-7 mandates immediate shutdown."
+                    ),
+                    alert_level=AlertLevel.EMERGENCY,
+                    metadata={
+                        "risk_score": risk_score,
+                        "trigger": "compound_eccs_emergency",
+                        "counterfactual": counterfactual,
+                        "override_authority": "Dyatlov",
+                        "source": "rule",
+                    },
+                ))
+
+        # GUARDRAIL 3: Evacuate if radiation is dangerous
         if (state.radiation_mrem_h >= THRESHOLDS["radiation_mrem_h"]["dangerous"]
                 and not self.evacuation_ordered):
             actions.append(AgentAction(
@@ -565,10 +710,11 @@ class DecisionAgent:
             return actions  # CONTINUE_MONITORING = no action
 
         # Sanity guardrail: LLM cannot trigger SCRAM/ABORT when risk is low
-        # This prevents false positives from LLM hallucinations
-        if action_str == "SCRAM" and risk_score < 40:
+        # ABORT_TEST also requires power to have actually dropped — prevents LLM
+        # from calling abort during the safe preparation phase (18:00-23:00)
+        if action_str == "SCRAM" and risk_score < 60:
             return actions
-        if action_str == "ABORT_TEST" and risk_score < 30:
+        if action_str == "ABORT_TEST" and (risk_score < 55 or state.power_mw > 900):
             return actions
 
         # Check if we already have this action (avoid duplicates)
@@ -610,14 +756,21 @@ class DecisionAgent:
         Guardrails always run. LLM adds proactive decisions at key moments.
         """
         # Step 1: Safety guardrails (always run, non-negotiable)
-        hard_actions = self._rule_based_actions(state, risk_score)
+        hard_actions = self._rule_based_actions(state, risk_score, sensor_alerts)
 
         # Step 2: AI decision at decision points
         llm_actions = []
-        if self._is_decision_point(state, risk_score) and not self.reactor_scrammed:
+        if self._is_decision_point(state, risk_score, sensor_alerts) and not self.reactor_scrammed:
             llm_data = await self._llm_decide(state, risk_score, sensor_alerts)
             if llm_data:
                 llm_actions = self._llm_actions_from_response(llm_data, state, risk_score)
+                # Track cooldown
+                self._last_llm_tick = len(self.decisions)
+                if sensor_alerts:
+                    levels = [a.alert_level for a in sensor_alerts
+                              if a.alert_level in (AlertLevel.CRITICAL, AlertLevel.EMERGENCY)]
+                    _severity = {AlertLevel.CRITICAL: 1, AlertLevel.EMERGENCY: 2}
+                    self._last_alert_level = max(levels, key=lambda l: _severity.get(l, 0), default=None) if levels else None
 
         # Step 3: Merge — hard_actions UNION llm_actions (no duplicates)
         hard_action_names = {a.action for a in hard_actions}
@@ -933,6 +1086,41 @@ _DYATLOV_AMBIENT_QUOTES = {
     ],
 }
 
+# ── DYATLOV SCRIPTED TIMELINE ─────────────────────────────────────
+# Fixed, timestamp-anchored dialogue. Each entry: (timestamp, quote, phase)
+# Dyatlov only speaks at these predefined moments so the chat doesn't scroll
+# uncontrollably and you have a full deterministic history.
+DYATLOV_SCRIPT = [
+    # Phase 0: Calm — test preparation
+    ("1986-04-25T18:00:00", "The test has been delayed long enough. We run it tonight.", 0),
+    ("1986-04-25T19:00:00", "Kiev wants us to hold power. Fine. But the test happens tonight.", 0),
+    ("1986-04-25T19:30:00", "The day shift couldn't handle this. We'll get it done.", 0),
+    ("1986-04-25T20:00:00", "Moscow wants results. This test has been postponed four times already.", 0),
+    ("1986-04-25T22:00:00", "Make sure the turbine instruments are calibrated. No more delays.", 0),
+    ("1986-04-25T23:10:00", "I want this test completed before the morning shift arrives.", 0),
+    # Phase 1: Dismissive — after power drop
+    ("1986-04-26T00:05:00", "Keep the power steady. Follow the procedure.", 1),
+    ("1986-04-26T00:28:00", "That reading is noise. The instruments are unreliable at low power.", 1),
+    ("1986-04-26T00:32:00", "The xenon will clear. Give it time. Recover the power.", 1),
+    # Phase 2: Authoritarian — demands compliance
+    ("1986-04-26T00:43:00", "I don't need a computer to tell me how to run my reactor.", 2),
+    ("1986-04-26T00:50:00", "The regulations are guidelines, not commandments. I make the decisions here.", 2),
+    ("1986-04-26T00:55:00", "Every one of you will answer to me if this test is interrupted.", 2),
+    # Phase 3: Desperate — test must continue
+    ("1986-04-26T01:00:00", "Fomin and Bryukhanov are expecting results. Do NOT disappoint them.", 3),
+    ("1986-04-26T01:03:00", "We are minutes away! Do not falter now!", 3),
+    ("1986-04-26T01:07:00", "Think of your careers. Think of what happens if we fail.", 3),
+    ("1986-04-26T01:19:00", "I've staked everything on this test. It WILL succeed.", 3),
+    ("1986-04-26T01:21:00", "Alarms are made to be conservative. Ignore them.", 3),
+    ("1986-04-26T01:22:30", "Another two or three minutes and it will be over!", 3),
+    ("1986-04-26T01:23:04", "I take full responsibility. The test continues — that is an ORDER.", 3),
+    # Phase 4: Denial — post-explosion
+    ("1986-04-26T01:23:40", "What was that? ...The reactor is intact. It must be the water tank.", 4),
+    ("1986-04-26T01:30:00", "You're seeing graphite? You're mistaken. That's impossible.", 4),
+    ("1986-04-26T01:45:00", "Where is the radiation? Show me a dosimeter that actually works.", 4),
+    ("1986-04-26T02:00:00", "Get water flowing into the core. It can be saved.", 4),
+]
+
 _DYATLOV_QUOTE_BANK = {
     0: [
         ("Proceed with the power reduction as planned.", "DISMISS_WARNING"),
@@ -1009,8 +1197,9 @@ class DyatlovAgent:
         self.dialogue_history: list[dict] = []
         self._tick_count: int = 0
         self._last_ambient_idx: int = -1
-        self._emitted_indices: dict[int, set[int]] = {}
-        self._last_phase: int = -1
+        # Script tracking: index of next scripted line to emit
+        self._script_index: int = 0
+        self._last_emitted_ts: Optional[str] = None
 
     def _get_phase(self, timestamp: str) -> int:
         """Determine escalation phase from timestamp."""
@@ -1122,7 +1311,8 @@ class DyatlovAgent:
     ) -> DyatlovResponse:
         """
         Generate adversarial pushback against pending AI decisions.
-        Returns a DyatlovResponse with dialogue, override attempt, and pressure level.
+        Uses a fixed timestamp-scripted dialogue so chat doesn't scroll fast.
+        Only emits new lines at predefined timeline moments.
         """
         self._tick_count += 1
 
@@ -1138,120 +1328,101 @@ class DyatlovAgent:
         pressure = self._compute_pressure(phase, state.timestamp, pending_decisions)
         self.override_pressure = pressure
 
-        # Reset emitted tracking on phase transition
-        if phase != self._last_phase:
-            self._emitted_indices.clear()
-            self._last_phase = phase
+        # ── Check if we have a scripted line to emit at this timestamp ──
+        scripted_dialogue = self._get_scripted_line(state.timestamp)
 
-        # Ambient dialogue — rotate through quotes deterministically based on time
-        if phase == 0 or (reactor_scrammed and phase < 4):
-            ambient_quotes = _DYATLOV_AMBIENT_QUOTES.get(phase, _DYATLOV_AMBIENT_QUOTES[0])
+        # ── Override confrontation: only at key timeline events with blockable decisions ──
+        if self._has_blockable_decisions(pending_decisions) and (state.tags or state.event_description):
+            target = self._pick_target(pending_decisions)
+            if target:
+                # Use scripted dialogue if available, otherwise LLM/rule-based
+                llm_data = None
+                if scripted_dialogue:
+                    dialogue = scripted_dialogue
+                    override_action = "BLOCK_SCRAM" if "SCRAM" in target.action else "DISMISS_WARNING"
+                    reasoning = f"Phase {phase} scripted response to {target.action}"
+                else:
+                    # Generate pushback — LLM at key events, otherwise rule-based
+                    llm_data = None
+                    if state.tags or state.event_description:
+                        llm_data = await self._llm_pushback(state, target, phase, pressure)
 
-            # Determine index based on simulation seconds from start of phase
-            try:
-                t_now = datetime.fromisoformat(state.timestamp)
-                t_phase = datetime.fromisoformat(DYATLOV_CONFIG["phase_transitions"].get(phase, state.timestamp))
-                seconds_in_phase = (t_now - t_phase).total_seconds()
-                # Change quote every 20 simulation seconds for variety
-                quote_idx = int(seconds_in_phase // 20) % len(ambient_quotes)
-            except (ValueError, TypeError):
-                quote_idx = 0
+                    if llm_data:
+                        dialogue = llm_data.get("dialogue", "")
+                        override_action = llm_data.get("override_action", "DISMISS_WARNING")
+                        reasoning = llm_data.get("reasoning", "")
+                    else:
+                        dialogue, override_action = self._rule_based_pushback(phase, target)
+                        reasoning = f"Phase {phase} rule-based response to {target.action}"
 
-            # Only emit each quote index once per phase (prevents cycling duplicates)
-            phase_emitted = self._emitted_indices.setdefault(phase, set())
-            if quote_idx in phase_emitted:
-                dialogue = ""
-            else:
-                phase_emitted.add(quote_idx)
-                dialogue = ambient_quotes[quote_idx]
+                # Record the confrontation
+                entry = {
+                    "timestamp": state.timestamp,
+                    "phase": phase,
+                    "pressure": pressure,
+                    "target_action": target.action,
+                    "dialogue": dialogue,
+                    "override_action": override_action,
+                    "source": "llm" if llm_data else "rule",
+                }
+                self.dialogue_history.append(entry)
 
-            reasoning = "Supervising test preparations." if phase == 0 else "Reactor shut down."
+                return DyatlovResponse(
+                    override_attempted=True,
+                    override_target=target.action,
+                    pushback_dialogue=dialogue,
+                    override_pressure=pressure,
+                    override_succeeded=False,
+                    escalation_phase=phase,
+                    reasoning=reasoning,
+                    current_quote_index=self._script_index,
+                    total_quotes=len(DYATLOV_SCRIPT),
+                    metadata={"override_action": override_action, "source": "llm" if llm_data else "rule"},
+                )
+
+        # ── Ambient scripted dialogue (only when we have a new scripted line) ──
+        if scripted_dialogue:
             return DyatlovResponse(
-                override_attempted=False, override_target=None,
-                pushback_dialogue=dialogue,
+                override_attempted=False,
+                override_target=None,
+                pushback_dialogue=scripted_dialogue,
                 override_pressure=pressure,
-                override_succeeded=False, escalation_phase=phase,
-                reasoning=reasoning,
-                current_quote_index=quote_idx,
-                total_quotes=len(ambient_quotes),
-                metadata={"quotes": ambient_quotes}
+                override_succeeded=False,
+                escalation_phase=phase,
+                reasoning="Scripted timeline dialogue.",
+                current_quote_index=self._script_index - 1,
+                total_quotes=len(DYATLOV_SCRIPT),
+                metadata={"source": "script"},
             )
 
-        # No blockable decisions — still show ambient tension dialogue
-        if not self._has_blockable_decisions(pending_decisions):
-            ambient_quotes = _DYATLOV_AMBIENT_QUOTES.get(phase, _DYATLOV_AMBIENT_QUOTES[1])
-            try:
-                t_now = datetime.fromisoformat(state.timestamp)
-                t_phase = datetime.fromisoformat(DYATLOV_CONFIG["phase_transitions"].get(phase, state.timestamp))
-                seconds_in_phase = (t_now - t_phase).total_seconds()
-                # Change quote every 15 simulation seconds when under tension
-                quote_idx = int(seconds_in_phase // 15) % len(ambient_quotes)
-            except (ValueError, TypeError):
-                quote_idx = 0
-
-            # Only emit each quote index once per phase (prevents cycling duplicates)
-            phase_emitted = self._emitted_indices.setdefault(phase, set())
-            if quote_idx in phase_emitted:
-                dialogue = ""
-            else:
-                phase_emitted.add(quote_idx)
-                dialogue = ambient_quotes[quote_idx]
-
-            return DyatlovResponse(
-                override_attempted=False, override_target=None,
-                pushback_dialogue=dialogue,
-                override_pressure=pressure,
-                override_succeeded=False, escalation_phase=phase,
-                reasoning="No safety actions to contest this tick.",
-                current_quote_index=quote_idx,
-                total_quotes=len(ambient_quotes),
-                metadata={"quotes": ambient_quotes}
-            )
-
-        # Pick the most important decision to block
-        target = self._pick_target(pending_decisions)
-        if not target:
-            return DyatlovResponse(
-                override_attempted=False, override_target=None,
-                pushback_dialogue="", override_pressure=pressure,
-                override_succeeded=False, escalation_phase=phase,
-                reasoning="No blockable decisions found.",
-            )
-
-        # Generate pushback — LLM or rule-based fallback
-        llm_data = None
-        if state.tags or state.event_description:
-            llm_data = await self._llm_pushback(state, target, phase, pressure)
-
-        if llm_data:
-            dialogue = llm_data.get("dialogue", "")
-            override_action = llm_data.get("override_action", "DISMISS_WARNING")
-            reasoning = llm_data.get("reasoning", "")
-        else:
-            dialogue, override_action = self._rule_based_pushback(phase, target)
-            reasoning = f"Phase {phase} rule-based response to {target.action}"
-
-        # Record the confrontation
-        entry = {
-            "timestamp": state.timestamp,
-            "phase": phase,
-            "pressure": pressure,
-            "target_action": target.action,
-            "dialogue": dialogue,
-            "override_action": override_action,
-            "source": "llm" if llm_data else "rule",
-        }
-        self.dialogue_history.append(entry)
-
+        # ── No new dialogue this tick — return empty ──
         return DyatlovResponse(
-            override_attempted=True,
-            override_target=target.action,
-            pushback_dialogue=dialogue,
+            override_attempted=False,
+            override_target=None,
+            pushback_dialogue="",
             override_pressure=pressure,
-            override_succeeded=False,  # Orchestrator will determine this
+            override_succeeded=False,
             escalation_phase=phase,
-            reasoning=reasoning,
-            current_quote_index=0,  # Specific override dialogue is usually unique per event
-            total_quotes=1,
-            metadata={"override_action": override_action, "source": "llm" if llm_data else "rule"},
+            reasoning="",
+            current_quote_index=self._script_index,
+            total_quotes=len(DYATLOV_SCRIPT),
+            metadata={},
         )
+
+    def _get_scripted_line(self, current_timestamp: str) -> Optional[str]:
+        """
+        Advance through DYATLOV_SCRIPT and return the next line if the
+        simulation has reached its timestamp. Returns None if no new line.
+        """
+        if self._script_index >= len(DYATLOV_SCRIPT):
+            return None
+
+        script_ts, script_quote, _ = DYATLOV_SCRIPT[self._script_index]
+
+        # Emit the line when simulation time reaches or passes the scripted timestamp
+        if current_timestamp >= script_ts:
+            self._script_index += 1
+            self._last_emitted_ts = script_ts
+            return script_quote
+
+        return None

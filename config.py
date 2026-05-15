@@ -28,12 +28,12 @@ LLM_CONFIG = {
     "use_azure": os.getenv("USE_AZURE", "false").lower() == "true",
     # AI reasoning settings
     "enabled": os.getenv("LLM_ENABLED", "true").lower() == "true",
-    "timeout_s": float(os.getenv("LLM_TIMEOUT", "5.0")),
-    "max_retries": 1,
+    "timeout_s": float(os.getenv("LLM_TIMEOUT", "15.0")),
+    "max_retries": 2,
     "temperature_decision": 0.2,   # Low for deterministic safety decisions
     "temperature_risk": 0.3,       # Slightly higher for nuanced risk assessment
-    "max_tokens_decision": 300,
-    "max_tokens_risk": 250,
+    "max_tokens_decision": 600,
+    "max_tokens_risk": 500,
     "decision_points_only": True,  # Only call LLM at meaningful timeline events
 }
 
@@ -41,7 +41,7 @@ LLM_CONFIG = {
 SIMULATION = {
     "speed_multiplier": int(os.getenv("SIM_SPEED", "60")),  # 60x = 1 min per real hour
     "start_time": "1986-04-25T23:00:00",  # Test begins at 23:00
-    "sim_start_from": "1986-04-25T18:00:00",  # Web UI starts playback from 18:00
+    "sim_start_from": "1986-04-25T22:00:00",  # Web UI starts playback from 22:00 (skip holding phase)
     "explosion_time": "1986-04-26T01:23:40",
     "tick_interval_sec": 1.0,  # How often simulator emits events
 }
@@ -138,7 +138,7 @@ DYATLOV_CONFIG = {
     "max_delay_ticks": 3,
     # LLM settings (higher temp for dramatic variation in dialogue)
     "temperature": 0.7,
-    "max_tokens": 150,
+    "max_tokens": 300,
 }
 
 # ── Security & Governance (Azure Production) ──────────────────────

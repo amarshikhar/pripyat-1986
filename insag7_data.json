@@ -1,0 +1,50 @@
+[
+  {
+    "id": "1",
+    "title": "INSAG-7 Operating Reactivity Margin (ORM)",
+    "content": "The Operating Reactivity Margin (ORM) must maintain a minimum of 30 control rods inserted at all times during RBMK-1000 operation. Below 26 rods, the reactor lacks sufficient shutdown margin. Below 15 rods, an immediate SCRAM (AZ-5) is mandatory with no exceptions. The ORM violation was the single most critical procedural breach on April 26, 1986, when operators reduced to 6-8 rods while attempting to raise power from xenon-poisoned conditions.",
+    "category": "safety_protocol"
+  },
+  {
+    "id": "2",
+    "title": "INSAG-7 Positive Void Coefficient",
+    "content": "The RBMK-1000 has a positive void coefficient of reactivity, meaning that steam void formation in the coolant channels increases reactivity rather than decreasing it. This is especially dangerous at low power levels below 700 MW where the void coefficient becomes strongly positive. At the time of the accident, the reactor was operating at approximately 200 MW thermal — deep in the unstable low-power regime where any perturbation could trigger a power excursion.",
+    "category": "reactor_physics"
+  },
+  {
+    "id": "3",
+    "title": "INSAG-7 ECCS Disabling Violation",
+    "content": "The Emergency Core Cooling System (ECCS) was deliberately disabled by Deputy Chief Engineer Dyatlov to prevent it from interfering with the turbine rundown test. INSAG-7 identifies this as a critical safety violation. The ECCS is the last line of defense against loss-of-coolant accidents. Its disabling removed the final automated safety barrier that could have mitigated the consequences of the power excursion.",
+    "category": "safety_protocol"
+  },
+  {
+    "id": "4",
+    "title": "INSAG-7 Xenon Poisoning Recovery Prohibition",
+    "content": "After a rapid power reduction, Xenon-135 accumulates in the reactor core, absorbing neutrons and suppressing reactivity (xenon poisoning). INSAG-7 strictly prohibits attempts to recover power by withdrawing control rods during xenon poisoning conditions. The correct procedure is to wait 24-48 hours for xenon decay. On April 26, operators violated this by withdrawing nearly all control rods to overcome xenon poisoning, creating conditions for a prompt supercritical excursion.",
+    "category": "operating_procedure"
+  },
+  {
+    "id": "5",
+    "title": "INSAG-7 AZ-5 Emergency Shutdown Design Flaw",
+    "content": "The AZ-5 emergency shutdown button, intended as the ultimate safety measure, had a catastrophic design flaw. The control rod tips contained graphite displacers that initially increased reactivity for 3-5 seconds before the boron carbide absorber sections entered the core. When AZ-5 was pressed at 01:23:40 on April 26, this positive scram effect triggered the supercritical excursion that destroyed the reactor. INSAG-7 identified this as a fundamental design deficiency.",
+    "category": "reactor_design"
+  },
+  {
+    "id": "6",
+    "title": "INSAG-7 Turbine Rundown Test Procedure",
+    "content": "The turbine rundown test was designed to verify that the spinning turbine could provide enough electricity to power the reactor coolant pumps during the 60-75 second gap between external power loss and diesel generator startup. The test had been delayed multiple times and was finally attempted under unsafe conditions: low power, minimal control rods, disabled ECCS, and with an exhausted night shift crew unfamiliar with the test procedures.",
+    "category": "test_procedure"
+  },
+  {
+    "id": "7",
+    "title": "INSAG-7 Compound Risk Analysis",
+    "content": "INSAG-7 concludes that no single violation caused the disaster. It was the combination of multiple simultaneous violations: low power operation (200 MW), minimal control rods (6-8), disabled ECCS, xenon poisoning recovery attempt, positive void coefficient at low power, and the AZ-5 design flaw. Each violation individually was dangerous; combined, they made a catastrophic power excursion inevitable. Modern AI safety systems must detect these compound risk patterns.",
+    "category": "root_cause_analysis"
+  },
+  {
+    "id": "8",
+    "title": "INSAG-7 Evacuation Timeline Failure",
+    "content": "The city of Pripyat (population 49,000) was not evacuated until 36 hours after the explosion at 14:00 on April 27, 1986. During this delay, residents were exposed to significant radiation. Children played outdoors, weddings were held, and the city functioned normally while graphite fragments from the reactor core littered the surrounding area. INSAG-7 identified the delayed evacuation as a major failure of emergency response protocols.",
+    "category": "emergency_response"
+  }
+]

@@ -368,6 +368,26 @@ body {
 .decision-mode.CRITICAL { color: var(--orange); border-color: var(--orange); background: rgba(255, 152, 0, 0.1); }
 .decision-mode.EMERGENCY { color: var(--red); border-color: var(--red); background: rgba(244, 67, 54, 0.2); font-weight: bold; }
 
+.review-section {
+    border: 1px solid var(--orange);
+    background: rgba(255, 152, 0, 0.08);
+    padding: 10px;
+}
+
+.review-banner { color: var(--orange); font-size: 11px; margin: 6px 0 10px; }
+.review-card { border-top: 1px solid rgba(255, 152, 0, 0.35); padding-top: 8px; }
+.review-id { color: var(--text-muted); font-size: 10px; }
+.review-action { color: var(--text-primary); font-weight: 700; margin: 5px 0; }
+.review-reasoning { color: var(--text-secondary); font-size: 11px; line-height: 1.45; margin-bottom: 8px; }
+.review-input {
+    width: 100%; box-sizing: border-box; margin: 3px 0; padding: 6px;
+    color: var(--text-primary); background: var(--bg-dark); border: 1px solid var(--border);
+    font-family: inherit; font-size: 11px;
+}
+.review-actions { display: flex; gap: 6px; margin-top: 7px; }
+.review-approve { color: var(--green); border-color: var(--green); }
+.review-reject { color: var(--red); border-color: var(--red); }
+
 @keyframes pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.5; }
@@ -518,6 +538,9 @@ body {
 .log-agent.SensorAgent { color: var(--blue); }
 .log-agent.RiskAgent { color: var(--purple); }
 .log-agent.DecisionAgent { color: var(--red); }
+.log-agent.RecommendationAgent { color: var(--orange); }
+.log-agent.HumanSupervisor { color: var(--green); }
+.log-agent.SafetyKernel { color: var(--red); font-weight: 700; }
 .log-agent.EvacuationAgent { color: var(--yellow); }
 .log-agent.CommsAgent { color: var(--orange); }
 
@@ -988,6 +1011,9 @@ body {
 .audit-agent-tag.SensorAgent { color: var(--blue); }
 .audit-agent-tag.RiskAgent { color: var(--purple); }
 .audit-agent-tag.DecisionAgent { color: var(--red); }
+.audit-agent-tag.RecommendationAgent { color: var(--orange); }
+.audit-agent-tag.HumanSupervisor { color: var(--green); }
+.audit-agent-tag.SafetyKernel { color: var(--red); font-weight: 700; }
 .audit-agent-tag.DyatlovAgent { color: #e74c3c; }
 .audit-agent-tag.EvacuationAgent { color: var(--yellow); }
 .audit-agent-tag.CommsAgent { color: var(--orange); }

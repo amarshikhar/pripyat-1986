@@ -2,34 +2,34 @@
 
 ## Overview
 
-PRIPYAT-1986 operates in a safety-critical domain where AI decisions can mean the
-difference between life and death. This document defines our Responsible AI
+PRIPYAT-1986 is an educational counterfactual in a safety-critical domain. AI
+never receives actuator authority. This document defines our Responsible AI
 controls, aligned with the **Azure WAF AI Pillar** and **Microsoft Responsible AI Standard**.
 
 ---
 
 ## 1. AI vs Deterministic Decision Boundary
 
-The system uses a clear separation between **non-negotiable rule-based safety controls**
-and **AI-assisted advisory reasoning**. AI enhances the safety floor but can never weaken it.
+The system separates three authorities: an advisory AI lane, an attributable
+human-review lane, and an independent deterministic safety-instrumented lane.
 
 | Decision | Type | Trigger | AI Role |
 |----------|------|---------|---------|
-| SCRAM (AZ-5) at risk >85 | **Rule-based (hard guardrail)** | Risk score exceeds threshold | None — auto-executes regardless of LLM |
-| Evacuation at radiation ≥100 mrem/h | **Rule-based (hard guardrail)** | Sensor reading exceeds threshold | None — auto-executes |
-| ECCS re-enable when disabled | **Rule-based (hard guardrail)** | ECCS disabled + any warning | None — auto-recommends |
+| SCRAM (AZ-5) | **SafetyKernel protective trip** | Raw critical rods/coolant/pressure/temperature telemetry | None; the kernel accepts no AI score |
+| Evacuation | **Human-reviewed operational action** | Pending rule/AI proposal | Explain and recommend only |
+| ECCS re-enable | **Human-reviewed operational action** | Pending rule/AI proposal | Explain and recommend only |
 | Proactive ABORT_TEST at risk 60–85 | **AI-assisted** | LLM risk assessment | LLM can recommend earlier intervention |
 | Risk score computation | **Blended** | Every decision point | 70% LLM + 30% rule-based blend |
 | Dyatlov override assessment | **AI-assisted** | Operator pressure event | LLM generates pushback dialogue |
 
-### The Guardrail-Union Pattern
+### The Authority-Separation Pattern
 ```
-Rules run FIRST → produce mandatory action set
-LLM runs SECOND → produces advisory action set
-Final actions = UNION(rules, LLM)
+Raw telemetry → SafetyKernel → executed protective trip (no override path)
+Telemetry/context → AI/rules → pending recommendation → human approve/reject
 ```
-**Critical invariant**: LLM can ADD actions but NEVER REMOVE a rule-triggered action.
-Anti-hallucination guard: LLM cannot trigger SCRAM if risk < 40 (prevents false positives).
+**Critical invariants**: an AI response never sets plant state; a rejected review
+is final; an approved proposal is executed once; the SafetyKernel never consumes
+an LLM-derived risk score.
 
 ---
 
@@ -64,14 +64,14 @@ Operators can always see *why* the AI made a recommendation.
 | Risk Range | Decision Mode | Operator Action Required |
 |------------|--------------|------------------------|
 | 0–30 | **Advisory** | Monitor only. Dashboard green. No operator action. |
-| 30–60 | **Informational** | Yellow alert. Recommendations shown. Operator may act. |
-| 60–85 | **Confirmation** | Orange alert. AI recommends action. Operator should confirm or override within 3 ticks. |
-| >85 | **Auto-Execute** | Red alert. SCRAM triggers automatically. Operator cannot prevent (hard guardrail). Operator is notified. |
+| 30–60 | **Informational** | Yellow alert. Recommendations remain inert. |
+| 60–100 | **Human review** | Replay pauses; a named supervisor approves or rejects the proposal. |
+| Any raw hard-trip condition | **SafetyKernel trip** | Deterministic SCRAM executes independently of AI and human review. |
 
-At the 60–85 range, the operator has agency. Below 60, AI is advisory. Above 85,
-safety is non-negotiable. This ladder ensures human oversight where appropriate
-while preventing the exact scenario that caused Chernobyl — a human overriding
-critical safety systems.
+The human retains authority over operational decisions, while the simulated
+protective system retains authority over its narrow hard-trip envelope. This is
+the distinction missing from the earlier implementation, where a blended AI
+risk score could directly change reactor state.
 
 ---
 
@@ -81,7 +81,8 @@ critical safety systems.
 The `--smoke-test` flag runs 5 ticks and validates:
 - SensorAgent produces expected alert types
 - RiskAgent returns properly structured JSON
-- DecisionAgent respects hard guardrails
+- RecommendationAgent output remains pending until human review
+- SafetyKernel trips from raw critical telemetry and cannot be overridden
 - LLM fallback to rules succeeds when API is unreachable
 
 ### Evaluation Criteria
@@ -90,15 +91,15 @@ The `--smoke-test` flag runs 5 ticks and validates:
 | LLM response latency | < 5 seconds | `llm_client.avg_latency_ms` |
 | Fallback rate | < 20% of ticks | `llm_fallback_count / total_ticks` |
 | Risk score accuracy | SCRAM triggers before explosion tick | Timeline comparison |
-| Guardrail integrity | 100% — no rule violation ever | Unit test assertion |
-| False positive rate | < 5% — SCRAM not triggered below risk 40 | Anti-hallucination guard |
+| Authority integrity | 100% — no agent proposal directly executes | Unit test assertion |
+| Safety-kernel isolation | 100% — no LLM score is an input | API and unit-test assertion |
 
 ### Production Validation
 Before each deployment:
 1. Run full simulation with fixed random seed
-2. Compare agent decisions against known-good baseline
-3. Verify SCRAM triggers at same timeline point (±2 ticks)
-4. Verify evacuation triggers at same timeline point (±2 ticks)
+2. Verify agent recommendations remain inert before approval
+3. Verify deterministic trips trigger from each raw critical condition
+4. Verify approve/reject finality and idempotency
 
 ---
 
@@ -128,7 +129,7 @@ baseline comparison before deployment.
 | LLM API timeout (>5s) | `asyncio.TimeoutError` | Fallback to 100% rule-based scoring | Risk score slightly less nuanced but SAFE |
 | LLM API error (rate limit, auth) | HTTP error code | Return `None` → rule-based fallback | Same as above |
 | Invalid JSON from LLM | Schema validation failure | Discard LLM response, use rule score | Same as above |
-| LLM hallucinates low risk | Anti-hallucination guard | Clamp: if rule_score > 85, ignore LLM | Guardrail prevents under-scoring |
+| LLM hallucinates risk/action | Schema and authority boundary | Store as inert proposal or discard | No direct plant effect |
 | Network partition | Connection error | All agents operate rule-based | Full safety maintained, reduced AI insight |
 | Dashboard disconnect | WebSocket close | Auto-reconnect every 2s | No data loss, agents continue |
 

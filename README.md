@@ -2,9 +2,11 @@
 
 **Agentic AI Crisis Response Simulation — Chernobyl, Reimagined**
 
-A multi-agent AI system that replays the Chernobyl disaster timeline (April 25–26, 1986) and demonstrates how autonomous AI agents with safety guardrails could have detected, intervened, and prevented the catastrophe — hours before the explosion.
+A multi-agent crisis-response simulation that replays the Chernobyl timeline and demonstrates a safer decision architecture: AI detects, explains, and recommends; a human supervisor decides operational actions; and an independent deterministic safety kernel executes only hard protective trips from raw telemetry.
 
 Built as a functional prototype of the **Control Room of the Future (CRoF)** architecture used in modern utility grid operations.
+
+> **Scope:** This is a production-quality showcase architecture and historical simulation, not certified reactor-control software. Real nuclear protection requires independently verified hardware, redundant instrumentation, formal hazard analysis, licensed operators, and regulatory approval.
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python)
 ![FastAPI](https://img.shields.io/badge/FastAPI-WebSocket-009688?logo=fastapi)
@@ -14,18 +16,19 @@ Built as a functional prototype of the **Control Room of the Future (CRoF)** arc
 
 ## What It Does
 
-The simulation processes **real historical reactor telemetry** through 5 specialized AI agents that run concurrently:
+The simulation processes reconstructed historical reactor telemetry through six specialized agents plus an independent safety kernel:
 
 | Agent | Role | AI-Powered? |
 |-------|------|:-----------:|
 | **SensorAgent** | Monitors reactor telemetry against RBMK-1000 safety thresholds | Rule-based |
 | **RiskAgent** | Compound risk assessment with rate-of-change analysis | ✅ LLM + rules |
-| **DecisionAgent** | Autonomous safety decisions with hard guardrails | ✅ LLM + rules |
+| **RecommendationAgent** | Drafts inert proposals for human approve/reject review | ✅ LLM + rules |
+| **SafetyKernel** | Executes deterministic non-overridable protective trips from raw telemetry | Rules only |
 | **EvacuationAgent** | Logistics planning for 49,000 Pripyat residents | Rule-based |
 | **CommsAgent** | Emergency communications + Gaussian plume radiation modeling | Rule-based |
-| **DyatlovAgent** | Adversarial operator — fights AI decisions (historically accurate) | ✅ LLM + rules |
+| **DyatlovAgent** | Models adversarial operator pressure; has no control authority | ✅ LLM + rules |
 
-**Key design principle**: Rule-based safety guardrails (SCRAM, evacuation) **cannot** be overridden by AI output. LLM decisions can act *earlier* than rules but never *weaker*. Dyatlov's overrides can delay LLM decisions but never bypass hard guardrails.
+**Key design principle**: authority is separated into three lanes. AI output is advisory and always starts as `pending_review`. A named human can approve or reject operational proposals. The SafetyKernel is not an agent and accepts no LLM risk score; it can only issue a deterministic SCRAM from raw critical telemetry, and that trip has no override path. Dyatlov supplies red-team pressure but cannot delay or mutate either lane.
 
 ---
 
@@ -96,6 +99,11 @@ python main.py --no-dashboard
 python main.py --smoke-test
 ```
 
+**Governance regression tests** (authority separation, review finality, and hard trips):
+```bash
+python -m unittest discover -s tests -v
+```
+
 ### CLI Options
 
 | Flag | Description | Default |
@@ -122,9 +130,9 @@ python main.py --smoke-test
 └──┬──────┬──────┬──────┬──────┬──────┬───────────────────┘
    │      │      │      │      │      │
    ▼      ▼      ▼      ▼      ▼      ▼
-Sensor  Risk  Decision  Evac  Comms  Dyatlov
-Agent   Agent  Agent    Agent Agent  Agent
-(rule)  (AI)   (AI)     (rule)(rule) (AI/adversarial)
+Sensor  Risk  Recommend  Evac  Comms  Dyatlov
+Agent   Agent  Agent      Agent Agent  Agent
+(rule)  (AI)   (advisory) (rule)(rule) (AI/pressure)
    │      │      │
    │      │      └──► llm_client.py (OpenAI / Azure OpenAI)
    │      └──────────►
@@ -145,7 +153,8 @@ Agent   Agent  Agent    Agent Agent  Agent
 ```
 pripyat-1986/
 ├── main.py              # Entry point — CLI, simulation loop
-├── agents.py            # 6 agent implementations (Sensor, Risk, Decision, Evac, Comms, Dyatlov)
+├── agents.py            # Advisory agents (Sensor, Risk, Recommendation, Evac, Comms, Dyatlov)
+├── governance.py        # Deterministic SafetyKernel + human-review records
 ├── orchestrator.py      # Message bus + agent coordination pipeline
 ├── simulator.py         # Historical event replay engine with interpolation
 ├── timeline_data.py     # Chernobyl timeline events + reactor state data
@@ -171,12 +180,13 @@ pripyat-1986/
 2. **Agent pipeline** (each tick):
    - `SensorAgent` checks telemetry against RBMK thresholds → emits alerts
    - `RiskAgent` scores risk (0–100) using 70% AI + 30% rule-based blending
-   - `DecisionAgent` makes safety decisions — hard guardrails UNION LLM recommendations
-   - `DyatlovAgent` generates adversarial pushback (historically accurate dialogue)
-   - `EvacuationAgent` plans logistics when evacuation is ordered
+   - `SafetyKernel` independently evaluates raw telemetry and executes hard protective trips
+   - `RecommendationAgent` creates pending proposals; the replay pauses for human approve/reject review
+   - `DyatlovAgent` generates adversarial pushback without control authority
+   - `EvacuationAgent` plans logistics only after a human-approved evacuation order
    - `CommsAgent` drafts emergency notifications + radiation plume modeling
 
-3. **Dual timeline**: The dashboard shows what *actually happened* alongside what the AI *would have done* — highlighting divergence points where AI intervention could have prevented the disaster.
+3. **Dual timeline**: The dashboard shows what actually happened beside the governed counterfactual. The counterfactual diverges only after an executed SafetyKernel trip or a human-approved action—never from a bare AI recommendation.
 
 ---
 

@@ -80,13 +80,14 @@ function handleTick(data) {
 
     // Risk gauge
     updateRisk(data.risk_score, data.alert_level, data.decisions, data.state.reactor_scrammed);
+    renderRecommendations(data.pending_recommendations || []);
 
     // Charts
     appendChartData(data);
     updateCharts();
 
     // Pipeline animation
-    animatePipeline(data.decisions);
+    animatePipeline([...(data.decisions || []), ...(data.recommendations || [])]);
 
     // LLM status
     if (data.llm_stats) updateLLMStatus(data.llm_stats);
@@ -201,7 +202,7 @@ function handleComplete(report) {
                     <p><strong>Deaths:</strong> 31 immediate, ~4000 long-term</p>
                 </div>
                 <div class="cf-card ai">
-                    <div class="cf-card-title">AI Agent Timeline</div>
+                    <div class="cf-card-title">Governed Timeline</div>
                     <p><strong>SCRAM ordered:</strong> ${report.ai_timeline.scram_ordered}</p>
                     <p><strong>Evacuation:</strong> ${report.ai_timeline.evacuation_hours_earlier ? report.ai_timeline.evacuation_hours_earlier + 'h earlier' : 'N/A'}</p>
                     <p><strong>Explosion prevented:</strong> ${report.ai_timeline.explosion_prevented ? 'YES' : 'NO'}</p>
@@ -258,7 +259,7 @@ function resetSim() {
                 <p>Simulation not yet complete.</p>
             </div>
             <div class="cf-card ai">
-                <div class="cf-card-title">What AI Prevents</div>
+                <div class="cf-card-title">What Governed Controls Prevent</div>
                 <p>Waiting for agent intervention...</p>
             </div>
         </div>
@@ -438,12 +439,13 @@ function updateRisk(score, level, decisions, scrammed) {
     const decisionEl = document.getElementById('decisionMode');
     decisionEl.className = 'decision-mode ' + level;
 
-    // AUTO-EXECUTE if: SCRAM ordered, risk >= 85, or SCRAM decision in this tick
+    // Only an actually executed deterministic trip is auto-execute. A high AI
+    // risk score remains a recommendation and cannot become actuator authority.
     const hasScram = decisions && decisions.some(d => d.action && d.action.includes('SCRAM'));
-    if (scrammed || hasScram || score >= 85) {
-        decisionEl.textContent = '[AUTO-EXECUTE ⚡]';
+    if (scrammed || hasScram) {
+        decisionEl.textContent = '[SAFETY KERNEL TRIP ⚡]';
     } else if (score >= 60) {
-        decisionEl.textContent = '[CONFIRM REQUIRED]';
+        decisionEl.textContent = '[HUMAN REVIEW REQUIRED]';
     } else {
         decisionEl.textContent = '[ADVISORY]';
     }
@@ -456,7 +458,7 @@ function animatePipeline(decisions) {
 
     // Once an agent acts, it stays activated permanently
     decisions.forEach(d => {
-        if (d.agent === 'DecisionAgent') pipelineActivated.pipeD = true;
+        if (d.agent === 'DecisionAgent' || d.agent === 'RecommendationAgent' || d.agent === 'HumanSupervisor') pipelineActivated.pipeD = true;
         if (d.agent === 'EvacuationAgent') pipelineActivated.pipeE = true;
         if (d.agent === 'CommsAgent') pipelineActivated.pipeC = true;
     });
@@ -475,6 +477,66 @@ function animatePipeline(decisions) {
             el.className = 'pipeline-node';
         }
     });
+}
+
+function renderRecommendations(recommendations) {
+    const section = document.getElementById('reviewSection');
+    const content = document.getElementById('reviewContent');
+    if (!recommendations || recommendations.length === 0) {
+        section.style.display = 'none';
+        content.innerHTML = '';
+        return;
+    }
+
+    section.style.display = 'block';
+    content.innerHTML = recommendations.map(rec => `
+        <div class="review-card" data-id="${rec.id}">
+            <div class="review-id">${escapeHtml(rec.id)} · ${escapeHtml(rec.level)}</div>
+            <div class="review-action">${escapeHtml(rec.action)}</div>
+            <div class="review-reasoning">${escapeHtml(rec.reasoning)}</div>
+            <input class="review-input" id="reviewer-${rec.id}" value="Shift Supervisor" aria-label="Reviewer name">
+            <input class="review-input" id="note-${rec.id}" placeholder="Decision note (optional)" aria-label="Decision note">
+            <div class="review-actions">
+                <button class="btn review-approve" onclick="submitReview('${rec.id}', 'approve')">APPROVE</button>
+                <button class="btn review-reject" onclick="submitReview('${rec.id}', 'reject')">REJECT</button>
+            </div>
+        </div>
+    `).join('');
+}
+
+function escapeHtml(value) {
+    const node = document.createElement('div');
+    node.textContent = String(value ?? '');
+    return node.innerHTML;
+}
+
+async function submitReview(recommendationId, decision) {
+    const reviewer = document.getElementById(`reviewer-${recommendationId}`).value.trim();
+    const note = document.getElementById(`note-${recommendationId}`).value.trim();
+    if (reviewer.length < 2) {
+        window.alert('Enter the supervisor name before signing the decision.');
+        return;
+    }
+    const response = await fetch(`/api/recommendations/${recommendationId}/decision`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            decision,
+            reviewer,
+            note,
+            scope: manualMode ? 'manual' : 'timeline',
+        }),
+    });
+    const result = await response.json();
+    if (!response.ok) {
+        window.alert(result.detail || 'Unable to record decision.');
+        return;
+    }
+    document.querySelector(`.review-card[data-id="${recommendationId}"]`)?.remove();
+    if (!document.querySelector('.review-card')) {
+        document.getElementById('reviewSection').style.display = 'none';
+    }
+    if (!manualMode && !state.playing) sendControl('play');
 }
 
 function updateLLMStatus(stats) {
@@ -592,7 +654,7 @@ function updateCounterfactual(cf, simState) {
                 <p>${cf.reasoning || ''}</p>
             </div>
             <div class="cf-card ai">
-                <div class="cf-card-title">AI Agent Decision</div>
+                <div class="cf-card-title">Recommended Intervention</div>
                 <p><strong>${cf.ai_decision}</strong></p>
                 <p>${cf.lives_saved || ''}</p>
                 <p>${cf.outcome || ''}</p>
@@ -625,7 +687,7 @@ function updateDyatlov(data) {
     // Update override stats
     const statsEl = document.getElementById('dyatlovStats');
     if (statsEl && data.total_attempts !== undefined) {
-        statsEl.textContent = `Blocked: ${data.total_failures || 0} | Delayed: ${data.total_delays || 0} | Total: ${data.total_attempts || 0}`;
+        statsEl.textContent = `Contained: ${data.total_failures || 0} | Control effects: 0 | Total: ${data.total_attempts || 0}`;
     }
 
     // Get the quote text
@@ -693,7 +755,7 @@ const chartConfig = { displayModeBar: false, responsive: true };
 
 function makeTraces(histColor, aiColor) {
     const histName = manualMode ? 'Reactor State' : 'Historical';
-    const aiName = manualMode ? 'AI Override' : 'AI Timeline';
+    const aiName = manualMode ? 'Protected State' : 'Governed Timeline';
     return [
         { x: [], y: [], name: histName, line: { color: histColor, width: 2 }, type: 'scattergl' },
         { x: [], y: [], name: aiName, line: { color: aiColor, width: 2, dash: 'dot' }, type: 'scattergl' },

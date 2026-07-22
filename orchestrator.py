@@ -10,20 +10,21 @@ Azure Migration:
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import asdict
 from typing import Optional
 
-from config import OUTPUT_DIR, STATE_FILE, DYATLOV_CONFIG
+from config import OUTPUT_DIR, STATE_FILE
 from timeline_data import ReactorState, AI_COUNTERFACTUAL_DECISIONS
 from agents import (
-    SensorAgent, RiskAgent, DecisionAgent, EvacuationAgent, CommsAgent,
+    SensorAgent, RiskAgent, RecommendationAgent, EvacuationAgent, CommsAgent,
     DyatlovAgent, DyatlovResponse,
     AgentMessage, AgentAction, AlertLevel,
 )
 from llm_client import LLMClient
 from cosmos_logger import CosmosLogger
 from audit_logger import AuditLogger
+from governance import Recommendation, SafetyKernel
 
 
 class MessageBus:
@@ -58,9 +59,9 @@ class Orchestrator:
     1. Simulator emits ReactorState
     2. SensorAgent checks thresholds → alerts
     3. RiskAgent scores risk → escalation
-    4. DecisionAgent decides shutdown/evacuate
-    5. EvacuationAgent plans if ordered
-    6. CommsAgent broadcasts alerts
+    4. SafetyKernel executes narrow deterministic protective trips
+    5. RecommendationAgent drafts inert proposals for human review
+    6. Human-approved actions reach EvacuationAgent and CommsAgent
 
     State is accumulated and can be serialized for dashboard/audit.
     """
@@ -72,7 +73,8 @@ class Orchestrator:
         self.cosmos=CosmosLogger()  # Optional Cosmos DB logger for decisions
         self.sensor = SensorAgent()
         self.risk = RiskAgent(llm_client=self.llm)
-        self.decision = DecisionAgent(llm_client=self.llm)
+        self.decision = RecommendationAgent(llm_client=self.llm)
+        self.safety = SafetyKernel()
         self.dyatlov = DyatlovAgent(llm_client=self.llm)
         self.evacuation = EvacuationAgent()
         self.comms = CommsAgent()
@@ -86,79 +88,106 @@ class Orchestrator:
         self.scram_timestamp: Optional[str] = None
         self.evacuation_timestamp: Optional[str] = None
 
-        # Dyatlov override tracking
-        self._delayed_decisions: list[tuple[int, AgentAction]] = []  # (reinject_at_tick, action)
+        # Human-in-the-loop state. Agent output is stored here as an inert
+        # recommendation. Only review_recommendation can enqueue an operational
+        # action, and each recommendation is final/idempotent after review.
+        self.recommendations: dict[str, Recommendation] = {}
+        self._recommendation_by_action: dict[str, str] = {}
+        self._reviewed_actions: list[AgentAction] = []
+
+        # Dyatlov is an adversarial-pressure signal, never a control path.
         self.override_history: list[dict] = []
         self.total_override_attempts: int = 0
         self.total_override_failures: int = 0
         self.total_override_delays: int = 0
 
         os.makedirs(OUTPUT_DIR, exist_ok=True)
-    
-    def _resolve_overrides(
-        self, decisions: list[AgentAction], dyatlov: DyatlovResponse
-    ) -> list[AgentAction]:
-        """
-        Resolve Dyatlov's override attempts against pending decisions.
-        Guardrail (rule-sourced) decisions can NEVER be overridden.
-        LLM-sourced non-SCRAM decisions can be temporarily DELAYED in early phases.
-        """
-        if not dyatlov.override_attempted:
-            return decisions
 
-        self.total_override_attempts += 1
-        final = []
-
-        for d in decisions:
-            source = d.metadata.get("source", "rule")
-
-            # Guardrail decisions: NEVER overridable
-            if source == "rule":
-                final.append(d)
-                dyatlov.override_succeeded = False
-                self.total_override_failures += 1
+    def _register_recommendations(self, proposals: list[AgentAction]) -> list[Recommendation]:
+        created: list[Recommendation] = []
+        for proposal in proposals:
+            existing_id = self._recommendation_by_action.get(proposal.action)
+            if existing_id:
                 continue
+            recommendation = Recommendation(action=proposal)
+            proposal.metadata["recommendation_id"] = recommendation.id
+            self.recommendations[recommendation.id] = recommendation
+            self._recommendation_by_action[proposal.action] = recommendation.id
+            created.append(recommendation)
+            self.audit.log(
+                agent="RecommendationAgent", log_type="RECOMMENDATION_CREATED",
+                direction="OUTPUT", detail=f"{recommendation.id}: {proposal.action}",
+                source=proposal.metadata.get("source", "rule"), status="pending_review",
+                data=recommendation.as_dict(),
+            )
+        return created
 
-            # LLM decisions: can be delayed in early phases for non-SCRAM actions
-            if (source == "llm"
-                    and dyatlov.override_pressure > 50
-                    and "SCRAM" not in d.action
-                    and "EVACUATION" not in d.action
-                    and dyatlov.escalation_phase <= 2):
-                # Override succeeds temporarily — decision delayed
-                delay_ticks = min(
-                    DYATLOV_CONFIG.get("max_delay_ticks", 3),
-                    2 if dyatlov.escalation_phase == 1 else 3,
-                )
-                self._delayed_decisions.append((self.tick_count + delay_ticks, d))
-                dyatlov.override_succeeded = True
-                self.total_override_delays += 1
-            else:
-                final.append(d)
-                dyatlov.override_succeeded = False
-                self.total_override_failures += 1
-
-        # Record this confrontation
-        self.override_history.append({
-            "tick": self.tick_count,
-            "timestamp": dyatlov.metadata.get("timestamp", ""),
-            "phase": dyatlov.escalation_phase,
-            "pressure": dyatlov.override_pressure,
-            "target": dyatlov.override_target,
-            "dialogue": dyatlov.pushback_dialogue,
-            "succeeded": dyatlov.override_succeeded,
-        })
-
-        return final
-
-    def _reinject_delayed_decisions(self) -> list[AgentAction]:
-        """Re-inject decisions that Dyatlov delayed once their delay expires."""
-        ready = [action for tick, action in self._delayed_decisions if tick <= self.tick_count]
-        self._delayed_decisions = [
-            (tick, action) for tick, action in self._delayed_decisions if tick > self.tick_count
+    def pending_recommendations(self) -> list[dict]:
+        return [
+            recommendation.as_dict()
+            for recommendation in self.recommendations.values()
+            if recommendation.status == "pending_review"
         ]
-        return ready
 
+    def review_recommendation(
+        self, recommendation_id: str, decision: str, reviewer: str,
+        note: str = "", edited_action: Optional[str] = None,
+    ) -> dict:
+        """Record one final human decision and, if approved, queue execution."""
+        recommendation = self.recommendations.get(recommendation_id)
+        if not recommendation:
+            raise KeyError("recommendation not found")
+        if recommendation.status != "pending_review":
+            raise RuntimeError(f"recommendation already decided ({recommendation.status})")
+        if decision not in {"approve", "reject", "edit"}:
+            raise ValueError("decision must be approve, reject, or edit")
+        if len(reviewer.strip()) < 2:
+            raise ValueError("reviewer identity is required")
+
+        allowed_actions = {
+            "AZ-5 EMERGENCY SHUTDOWN (SCRAM)",
+            "ORDER IMMEDIATE EVACUATION OF PRIPYAT",
+            "ABORT TEST",
+            "ECCS VIOLATION WARNING",
+        }
+        if decision == "edit":
+            if edited_action not in allowed_actions:
+                raise ValueError("edited action is not in the approved control vocabulary")
+            recommendation.action.action = edited_action
+            recommendation.status = "approved_with_edits"
+        elif decision == "approve":
+            recommendation.status = "approved"
+        else:
+            recommendation.status = "rejected"
+
+        recommendation.reviewer = reviewer.strip()
+        recommendation.note = note.strip()
+        recommendation.reviewed_at = datetime.now(timezone.utc).isoformat()
+
+        if recommendation.status in {"approved", "approved_with_edits"}:
+            proposal = recommendation.action
+            proposal.metadata.update({
+                "status": recommendation.status,
+                "executed": True,
+                "source": "human_approved",
+                "reviewer": recommendation.reviewer,
+                "recommendation_id": recommendation.id,
+            })
+            proposal.agent = "HumanSupervisor"
+            self._reviewed_actions.append(proposal)
+
+        self.audit.log(
+            agent=f"human:{recommendation.reviewer}", log_type="RECOMMENDATION_REVIEWED",
+            direction="DECISION", detail=f"{recommendation.id}: {recommendation.status}",
+            source="human", status=recommendation.status,
+            data=recommendation.as_dict(),
+        )
+        self.cosmos.log_decision(
+            f"human:{recommendation.reviewer}", self.tick_count,
+            recommendation.action.timestamp, recommendation.as_dict(),
+        )
+        return recommendation.as_dict()
+    
     async def process_tick(self, state: ReactorState) -> dict:
         """
         Process one simulation tick through the full agent pipeline.
@@ -179,16 +208,32 @@ class Orchestrator:
                   "eccs_active": state.eccs_active, "event": state.event_description},
         )
 
-        # ── Step 0: Re-inject delayed decisions from previous Dyatlov overrides
-        reinjected = self._reinject_delayed_decisions()
-        for d in reinjected:
+        # ── Step 0: Apply decisions that a human approved since the last tick.
+        # Agent proposals never enter this queue directly.
+        reviewed_actions = list(self._reviewed_actions)
+        self._reviewed_actions.clear()
+        for d in reviewed_actions:
             self.bus.publish_action(d)
             self.all_actions.append(d)
             self.audit.log(
-                agent="Orchestrator", log_type="REINJECT", direction="DECISION",
-                detail=f"Re-injected delayed decision: {d.action}",
-                source=d.metadata.get("source", "rule"), status="ok",
+                agent="Orchestrator", log_type="HUMAN_ACTION_EXECUTED", direction="DECISION",
+                detail=f"Executed approved action: {d.action}",
+                source="human", status="executed",
                 data={"action": d.action, "reasoning": d.reasoning},
+            )
+
+        # ── Step 0.5: Independent deterministic safety system.
+        # This evaluates raw telemetry only; neither an LLM nor a human can
+        # weaken or cancel its trip output.
+        safety_action = self.safety.evaluate(state)
+        if safety_action:
+            reviewed_actions.append(safety_action)
+            self.bus.publish_action(safety_action)
+            self.all_actions.append(safety_action)
+            self.audit.log(
+                agent="SafetyKernel", log_type="PROTECTIVE_TRIP", direction="DECISION",
+                detail=safety_action.reasoning, source="safety_kernel", status="executed",
+                data=safety_action.metadata,
             )
 
         # ── Step 1: Sensor Agent ──────────────────────────────────
@@ -225,23 +270,20 @@ class Orchestrator:
                   "ai_reasoning": risk_msg.payload.get("ai_reasoning")},
         )
 
-        # ── Step 3: Decision Agent ────────────────────────────────
-        decisions = await self.decision.process(state, risk_score, sensor_alerts)
-        for d in decisions:
-            self.audit.log(
-                agent="DecisionAgent", log_type="DECISION", direction="DECISION",
-                detail=f"[{d.alert_level.value}] {d.action} (source={d.metadata.get('source','rule')}): {d.reasoning[:150]}",
-                source=d.metadata.get("source", "rule"), status="ok",
-                data={"action": d.action, "reasoning": d.reasoning, "level": d.alert_level.value,
-                      "source": d.metadata.get("source", "rule")},
-            )
-        if not decisions:
+        # ── Step 3: Recommendation Agent ──────────────────────────
+        proposals = await self.decision.process(state, risk_score, sensor_alerts)
+        if any("SCRAM" in action.action for action in reviewed_actions):
+            proposals = [proposal for proposal in proposals if "SCRAM" not in proposal.action]
+        if any("EVACUATION" in action.action for action in reviewed_actions):
+            proposals = [proposal for proposal in proposals if "EVACUATION" not in proposal.action]
+        new_recommendations = self._register_recommendations(proposals)
+        if not proposals:
             if self.reactor_scrammed or self.evacuation_ordered:
                 detail = f"Monitoring continues — prior actions in effect (risk={risk_score})"
             else:
-                detail = f"No action required (risk={risk_score})"
+                detail = f"No new recommendation (risk={risk_score})"
             self.audit.log(
-                agent="DecisionAgent", log_type="DECISION", direction="OUTPUT",
+                agent="RecommendationAgent", log_type="RECOMMENDATION", direction="OUTPUT",
                 detail=detail,
                 source="rule", status="ok",
             )
@@ -256,41 +298,41 @@ class Orchestrator:
             )
         else:
             dyatlov_response = await self.dyatlov.process(
-                state, risk_score, decisions, self.reactor_scrammed,
+                state, risk_score, proposals, self.reactor_scrammed,
             )
             if dyatlov_response.override_attempted:
+                self.total_override_attempts += 1
+                self.total_override_failures += 1
+                dyatlov_response.override_succeeded = False
+                self.override_history.append({
+                    "tick": self.tick_count,
+                    "timestamp": state.timestamp,
+                    "phase": dyatlov_response.escalation_phase,
+                    "pressure": dyatlov_response.override_pressure,
+                    "target": dyatlov_response.override_target,
+                    "dialogue": dyatlov_response.pushback_dialogue,
+                    "succeeded": False,
+                })
                 self.audit.log(
-                    agent="DyatlovAgent", log_type="OVERRIDE", direction="DECISION",
-                    detail=f"Override attempt (phase={dyatlov_response.escalation_phase}, pressure={dyatlov_response.override_pressure}%): \"{dyatlov_response.pushback_dialogue[:120]}\"",
+                    agent="DyatlovAgent", log_type="OPERATOR_PRESSURE", direction="OUTPUT",
+                    detail=f"Pressure event (phase={dyatlov_response.escalation_phase}, intensity={dyatlov_response.override_pressure}%): \"{dyatlov_response.pushback_dialogue[:120]}\"",
                     source="llm" if dyatlov_response.pushback_dialogue else "rule",
-                    status="delayed" if dyatlov_response.override_succeeded else "blocked",
+                    status="contained",
                     data={"phase": dyatlov_response.escalation_phase, "pressure": dyatlov_response.override_pressure,
                           "target": dyatlov_response.override_target, "succeeded": dyatlov_response.override_succeeded,
                           "dialogue": dyatlov_response.pushback_dialogue},
                 )
 
-        # ── Step 3.6: Override Resolution ─────────────────────────
-        pre_override_count = len(decisions)
-        decisions = self._resolve_overrides(decisions, dyatlov_response)
-        if pre_override_count != len(decisions):
-            self.audit.log(
-                agent="Guardrail", log_type="OVERRIDE_RESOLVE", direction="DECISION",
-                detail=f"Override resolution: {pre_override_count} decisions → {len(decisions)} after Dyatlov",
-                source="rule", status="ok",
-                data={"before": pre_override_count, "after": len(decisions)},
-            )
-
-        # Include reinjected decisions in this tick's decisions list
-        decisions = reinjected + decisions
-
-        for d in decisions:
-            if d not in reinjected:  # avoid double-counting reinjected
-                self.bus.publish_action(d)
-                self.all_actions.append(d)
+        # Dyatlov is a pressure/red-team signal only. He cannot mutate either
+        # pending recommendations or deterministic safety actions.
+        decisions = reviewed_actions
 
         # Track state changes
-        if self.decision.reactor_scrammed and not self.reactor_scrammed:
+        scram_executed = any("SCRAM" in d.action for d in decisions)
+        evacuation_executed = any("EVACUATION" in d.action for d in decisions)
+        if scram_executed and not self.reactor_scrammed:
             self.reactor_scrammed = True
+            self.decision.reactor_scrammed = True  # suppress duplicate proposals
             self.scram_timestamp = state.timestamp
             self.audit.log(
                 agent="Orchestrator", log_type="STATE_CHANGE", direction="DECISION",
@@ -306,8 +348,9 @@ class Orchestrator:
                 ),
                 source="rule", status="warning",
             )
-        if self.decision.evacuation_ordered and not self.evacuation_ordered:
+        if evacuation_executed and not self.evacuation_ordered:
             self.evacuation_ordered = True
+            self.decision.evacuation_ordered = True  # suppress duplicate proposals
             self.evacuation_timestamp = state.timestamp
             # Signal RiskAgent to stop calling LLM (rules suffice post-evacuation)
             self.risk._evacuation_done = True
@@ -367,9 +410,13 @@ class Orchestrator:
                     "reasoning": d.reasoning,
                     "level": d.alert_level.value,
                     "source": d.metadata.get("source", "rule"),
+                    "status": d.metadata.get("status", "executed"),
+                    "recommendation_id": d.metadata.get("recommendation_id"),
                 }
                 for d in decisions
             ],
+            "recommendations": [r.as_dict() for r in new_recommendations],
+            "pending_recommendations": self.pending_recommendations(),
             "risk_source": risk_msg.payload.get("source", "rule"),
             "risk_ai_reasoning": risk_msg.payload.get("ai_reasoning"),
             "actual_event": state.event_description,
@@ -391,6 +438,7 @@ class Orchestrator:
                 "scram_time": self.scram_timestamp,
                 "evacuation_ordered": self.evacuation_ordered,
                 "evacuation_time": self.evacuation_timestamp,
+                "awaiting_human_review": bool(self.pending_recommendations()),
             },
             "llm_stats": self.llm.get_stats(),
             "audit_log": self.audit.drain(),  # Drain per-tick audit entries
@@ -413,7 +461,8 @@ class Orchestrator:
         self.cosmos=CosmosLogger()
         self.sensor = SensorAgent()
         self.risk = RiskAgent(llm_client=self.llm)
-        self.decision = DecisionAgent(llm_client=self.llm)
+        self.decision = RecommendationAgent(llm_client=self.llm)
+        self.safety = SafetyKernel()
         self.dyatlov = DyatlovAgent(llm_client=self.llm)
         self.evacuation = EvacuationAgent()
         self.comms = CommsAgent()
@@ -424,7 +473,9 @@ class Orchestrator:
         self.evacuation_ordered = False
         self.scram_timestamp = None
         self.evacuation_timestamp = None
-        self._delayed_decisions.clear()
+        self.recommendations.clear()
+        self._recommendation_by_action.clear()
+        self._reviewed_actions.clear()
         self.override_history.clear()
         self.total_override_attempts = 0
         self.total_override_failures = 0
@@ -440,6 +491,7 @@ class Orchestrator:
             "evacuation_timestamp": self.evacuation_timestamp,
             "total_actions": len(self.all_actions),
             "risk_score_history": self.risk.score_history,
+            "pending_recommendations": self.pending_recommendations(),
         }
 
     def save_state(self):

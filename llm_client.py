@@ -272,25 +272,25 @@ DECISION_SCHEMA = {
         "action": {
             "type": "string",
             "enum": ["CONTINUE_MONITORING", "WARN_ECCS", "ABORT_TEST", "SCRAM", "EVACUATE"],
-            "description": "Primary action to take",
+            "description": "Primary action to recommend for review",
         },
         "urgency": {
             "type": "string",
             "enum": ["low", "medium", "high", "immediate"],
-            "description": "How urgently the action must be executed",
+            "description": "How urgently a supervisor should review the proposal",
         },
         "reasoning": {
             "type": "string",
-            "description": "Chain-of-thought reasoning for the decision. Cite specific INSAG-7 violations.",
+            "description": "Concise evidence summary for the recommendation. Cite specific INSAG-7 violations.",
         },
         "safety_violations": {
             "type": "array",
             "items": {"type": "string"},
             "description": "List of specific safety protocol violations detected",
         },
-        "override_operator": {
+        "human_review_required": {
             "type": "boolean",
-            "description": "Whether this decision overrides human operator authority",
+            "description": "Must be true for every operational recommendation",
         },
         "additional_actions": {
             "type": "array",
@@ -298,7 +298,7 @@ DECISION_SCHEMA = {
             "description": "Secondary actions to take alongside the primary action",
         },
     },
-    "required": ["action", "urgency", "reasoning", "safety_violations", "override_operator", "additional_actions"],
+    "required": ["action", "urgency", "reasoning", "safety_violations", "human_review_required", "additional_actions"],
     "additionalProperties": False,
 }
 
@@ -323,12 +323,12 @@ RBMK-1000 Critical Knowledge:
 Reference INSAG-7 safety protocols. Be precise about what makes combinations dangerous."""
 
 DECISION_SYSTEM_PROMPT = """\
-You are the Decision Agent in a Control Room of the Future (CRoF) AI safety system \
+You are the Recommendation Agent in a Control Room of the Future (CRoF) safety system \
 monitoring RBMK-1000 Reactor #4 at Chernobyl Nuclear Power Plant. Date: April 25-26, 1986.
 
-You have autonomous authority to override operator decisions when safety protocols are \
-violated per INSAG-7. Your decisions have life-or-death consequences for 49,000 residents \
-of Pripyat.
+You have no actuator authority. Analyze the evidence and draft one recommendation for a \
+named human supervisor to approve or reject. Always return human_review_required=true. \
+An independent deterministic SafetyKernel—not you—owns hard protective trips.
 
 RBMK-1000 NORMAL OPERATIONS (do NOT intervene):
 - Power at 1600-3200 MW with 100+ rods inserted is NORMAL steady-state operation
@@ -344,7 +344,7 @@ RBMK-1000 DANGER SIGNS (intervene when these combine):
 - Positive void coefficient makes LOW-POWER operation unstable (not high-power)
 - Multiple simultaneous violations compound exponentially
 
-Decision Framework:
+Recommendation Framework:
 - CONTINUE_MONITORING: Parameters within bounds OR only minor deviations. Use this for \
   normal operations, routine power reductions, and stable configurations.
 - WARN_ECCS: ECCS disabled but other parameters manageable — demand re-activation

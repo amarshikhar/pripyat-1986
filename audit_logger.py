@@ -53,7 +53,7 @@ class AuditLogger:
     def _should_deduplicate(self, agent: str, log_type: str, detail: str) -> bool:
         """Check if this entry is a repeat of the previous one for this agent+type."""
         # Never deduplicate these important entry types
-        if log_type in ("LLM_CALL", "STATE_CHANGE", "OVERRIDE", "OVERRIDE_RESOLVE",
+        if log_type in ("LLM_CALL", "STATE_CHANGE", "OPERATOR_PRESSURE",
                         "REINJECT", "EVACUATION", "COMMS"):
             return False
         # Only deduplicate if direction is OUTPUT (routine checks)

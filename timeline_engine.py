@@ -117,6 +117,8 @@ class DualTimelineEngine:
                 "alert_level": tick_summary["alert_level"],
                 "sensor_alerts": tick_summary["sensor_alerts"],
                 "decisions": tick_summary["decisions"],
+                "recommendations": tick_summary.get("recommendations", []),
+                "pending_recommendations": tick_summary.get("pending_recommendations", []),
                 "actual_event": tick_summary["actual_event"],
                 "actual_decision": tick_summary["actual_decision"],
                 "counterfactual": tick_summary["counterfactual"],

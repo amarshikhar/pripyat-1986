@@ -17,7 +17,7 @@
         <div class="header-right">
             <span class="badge scram" id="scramBadge">REACTOR SCRAMMED</span>
             <span class="badge evac" id="evacBadge">EVACUATION ORDERED</span>
-            <span class="badge diverged" id="divergedBadge">AI TIMELINE DIVERGED</span>
+            <span class="badge diverged" id="divergedBadge">GOVERNED TIMELINE DIVERGED</span>
             <div class="progress-bar-container">
                 <div class="progress-bar" id="progressBar"></div>
             </div>
@@ -55,27 +55,27 @@
         <!-- Charts Area (2 columns x 3 rows) -->
         <div class="charts-area">
             <div class="chart-panel">
-                <div class="panel-title">Thermal Power (MW) <span class="chart-legend"><span class="legend-dot historical"></span>Historical <span class="legend-dot ai"></span>AI Timeline</span></div>
+                <div class="panel-title">Thermal Power (MW) <span class="chart-legend"><span class="legend-dot historical"></span>Historical <span class="legend-dot ai"></span>Governed</span></div>
                 <div id="chartPower" style="height:150px"></div>
             </div>
             <div class="chart-panel">
-                <div class="panel-title">Steam Pressure (MPa) <span class="chart-legend"><span class="legend-dot historical"></span>Historical <span class="legend-dot ai"></span>AI Timeline</span></div>
+                <div class="panel-title">Steam Pressure (MPa) <span class="chart-legend"><span class="legend-dot historical"></span>Historical <span class="legend-dot ai"></span>Governed</span></div>
                 <div id="chartSteam" style="height:150px"></div>
             </div>
             <div class="chart-panel">
-                <div class="panel-title">Control Rods Inserted (/211) <span class="chart-legend"><span class="legend-dot historical"></span>Historical <span class="legend-dot ai"></span>AI Timeline</span></div>
+                <div class="panel-title">Control Rods Inserted (/211) <span class="chart-legend"><span class="legend-dot historical"></span>Historical <span class="legend-dot ai"></span>Governed</span></div>
                 <div id="chartRods" style="height:150px"></div>
             </div>
             <div class="chart-panel">
-                <div class="panel-title">Core Temperature (&deg;C) <span class="chart-legend"><span class="legend-dot historical"></span>Historical <span class="legend-dot ai"></span>AI Timeline</span></div>
+                <div class="panel-title">Core Temperature (&deg;C) <span class="chart-legend"><span class="legend-dot historical"></span>Historical <span class="legend-dot ai"></span>Governed</span></div>
                 <div id="chartTemp" style="height:150px"></div>
             </div>
             <div class="chart-panel">
-                <div class="panel-title">Coolant Flow (m&sup3;/h) <span class="chart-legend"><span class="legend-dot historical"></span>Historical <span class="legend-dot ai"></span>AI Timeline</span></div>
+                <div class="panel-title">Coolant Flow (m&sup3;/h) <span class="chart-legend"><span class="legend-dot historical"></span>Historical <span class="legend-dot ai"></span>Governed</span></div>
                 <div id="chartCoolant" style="height:150px"></div>
             </div>
             <div class="chart-panel">
-                <div class="panel-title">Radiation (mrem/h) <span class="chart-legend"><span class="legend-dot historical"></span>Historical <span class="legend-dot ai"></span>AI Timeline</span></div>
+                <div class="panel-title">Radiation (mrem/h) <span class="chart-legend"><span class="legend-dot historical"></span>Historical <span class="legend-dot ai"></span>Governed</span></div>
                 <div id="chartRadiation" style="height:150px"></div>
             </div>
         </div>
@@ -143,8 +143,14 @@
                 </div>
             </div>
 
+            <div class="review-section" id="reviewSection" style="display:none">
+                <div class="panel-title">Human Safety Review</div>
+                <div class="review-banner">AI recommendation only — no action occurs until you decide.</div>
+                <div id="reviewContent"></div>
+            </div>
+
             <div class="dyatlov-section" id="dyatlovSection">
-                <div class="panel-title dyatlov-title">&#9889; OPERATOR OVERRIDE &mdash; DYATLOV</div>
+                <div class="panel-title dyatlov-title">&#9889; OPERATOR PRESSURE &mdash; DYATLOV</div>
                 <div class="dyatlov-header-row">
                     <div class="dyatlov-phase" id="dyatlovPhase">CALM</div>
                     <div class="dyatlov-phase-desc" id="dyatlovPhaseDesc">Supervising test preparations</div>
@@ -158,7 +164,7 @@
                     </div>
                     <span class="dyatlov-pressure-val" id="dyatlovPressureVal">0</span>
                 </div>
-                <div class="dyatlov-stats" id="dyatlovStats">Blocked: 0 | Delayed: 0 | Total: 0</div>
+                <div class="dyatlov-stats" id="dyatlovStats">Contained: 0 | Control effects: 0 | Total: 0</div>
                 <div class="dyatlov-result" id="dyatlovResult"></div>
             </div>
 
@@ -206,7 +212,7 @@
                             <p>Simulation not yet complete.</p>
                         </div>
                         <div class="cf-card ai">
-                            <div class="cf-card-title">What AI Prevents</div>
+                            <div class="cf-card-title">What Governed Controls Prevent</div>
                             <p>Waiting for agent intervention...</p>
                         </div>
                     </div>

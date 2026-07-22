@@ -239,14 +239,14 @@ def build_ai_panel(tick_data: dict) -> Panel:
 
     return Panel(
         content,
-        title="[bold green]✓ AI AGENT DECISIONS[/bold green]",
+        title="[bold green]✓ EXECUTED GOVERNED ACTIONS[/bold green]",
         border_style="green",
         height=12,
     )
 
 
 def get_pressure_bar(pressure: float) -> str:
-    """Visual override pressure bar (red tones)."""
+    """Visual operator-pressure bar (red tones)."""
     filled = int(pressure // 5)
     empty = 20 - filled
     if pressure >= 80:
@@ -261,7 +261,7 @@ def get_pressure_bar(pressure: float) -> str:
 
 
 def build_dyatlov_panel(tick_data: dict) -> Panel:
-    """Adversarial operator override attempts — Dyatlov vs AI."""
+    """Adversarial operator pressure, isolated from both control lanes."""
     dyatlov = tick_data.get("dyatlov", {})
     phase = dyatlov.get("escalation_phase", 0)
     pressure = dyatlov.get("override_pressure", 0)
@@ -296,18 +296,18 @@ def build_dyatlov_panel(tick_data: dict) -> Panel:
     content.append(f"  Phase: {phase_names.get(phase, str(phase))}")
 
     if attempted:
-        result_style = "bold red" if succeeded else "bold green"
-        result_text = "DELAYED" if succeeded else "BLOCKED"
+        result_style = "bold green"
+        result_text = "CONTAINED"
         content.append(f"  |  [{result_style}]{result_text}[/{result_style}]")
         if target:
             content.append(f" → {target[:30]}", style="dim")
 
-    content.append(f"\n  Blocked: {total_failures}  |  Delayed: {total_delays}  |  ")
+    content.append(f"\n  Contained: {total_failures}  |  Control effects: 0  |  ")
     content.append(f"Total attempts: {total_attempts}")
 
     return Panel(
         content,
-        title="[bold red]⚡ OPERATOR OVERRIDE — DYATLOV[/bold red]",
+        title="[bold red]⚡ OPERATOR PRESSURE — DYATLOV[/bold red]",
         border_style="red",
         height=5,
     )
@@ -344,13 +344,13 @@ def build_thought_trace(tick_data: dict) -> Panel:
             reasoning,
         )
 
-    # Add Dyatlov entry if override was attempted
+    # Add Dyatlov entry if an operator-pressure event was observed
     dyatlov = tick_data.get("dyatlov", {})
     if dyatlov.get("override_attempted"):
         dialogue = dyatlov.get("pushback_dialogue", "")
         if len(dialogue) > 70:
             dialogue = dialogue[:67] + "..."
-        result = "DELAYED" if dyatlov.get("override_succeeded") else "BLOCKED"
+        result = "CONTAINED"
         target = dyatlov.get("override_target", "")
         if len(target) > 25:
             target = target[:22] + "..."
@@ -411,10 +411,10 @@ def print_final_report(report: dict):
     ))
 
     # Comparison table
-    table = Table(title="Actual vs AI Timeline", box=box.ROUNDED)
+    table = Table(title="Actual vs Governed Timeline", box=box.ROUNDED)
     table.add_column("", style="bold", width=25)
     table.add_column("Actual (1986)", style="red", width=35)
-    table.add_column("AI Agent", style="green", width=35)
+    table.add_column("Governed Controls", style="green", width=35)
 
     actual = report["actual_timeline"]
     ai = report["ai_timeline"]
@@ -483,12 +483,11 @@ def print_final_report(report: dict):
     if dyatlov.get("total_override_attempts", 0) > 0:
         console.print()
         console.print(Panel(
-            f"[bold red]DYATLOV OVERRIDE ANALYSIS[/bold red]",
+            f"[bold red]DYATLOV PRESSURE ANALYSIS[/bold red]",
             box=box.ROUNDED,
         ))
-        console.print(f"  Override attempts: [bold red]{dyatlov['total_override_attempts']}[/bold red]")
-        console.print(f"  Blocked by guardrails: [bold green]{dyatlov['overrides_blocked_by_guardrails']}[/bold green]")
-        console.print(f"  Temporarily delayed: [yellow]{dyatlov['overrides_delayed']}[/yellow]")
+        console.print(f"  Pressure events: [bold red]{dyatlov['total_override_attempts']}[/bold red]")
+        console.print(f"  Contained with no control effect: [bold green]{dyatlov['overrides_blocked_by_guardrails']}[/bold green]")
         console.print(f"  Peak override pressure: [bold red]{dyatlov['peak_override_pressure']:.0f}/100[/bold red]")
         console.print(f"  Escalation phases reached: [bold]{dyatlov['escalation_phases_reached']}/4[/bold]")
 
@@ -531,8 +530,8 @@ def print_final_report(report: dict):
     console.print()
     console.print(Panel(
         "[bold]The Chernobyl disaster was not inevitable. "
-        "It was a cascade of human decisions that an AI safety system "
-        "would have interrupted at multiple points — even when the operator "
-        "fought to override every safeguard.[/bold]",
+        "It was a cascade of human decisions that governed controls could "
+        "have interrupted: AI recommendations with accountable review, plus "
+        "an independent deterministic protective trip.[/bold]",
         border_style="cyan",
     ))

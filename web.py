@@ -26,11 +26,11 @@ logging.basicConfig(
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
-from typing import Optional
+from pydantic import BaseModel, Field
+from typing import Literal, Optional
 
 from timeline_engine import DualTimelineEngine
 from config import SIMULATION
@@ -113,6 +113,13 @@ async def simulation_loop():
             break
 
         await broadcast(tick_data)
+        pending = tick_data.get("data", {}).get("pending_recommendations", [])
+        if pending:
+            # Freeze the replay at the human checkpoint. Hard SafetyKernel trips
+            # have already executed before this point and never wait for review.
+            sim_state["playing"] = False
+            await broadcast_state()
+            break
         await asyncio.sleep(1.0 / TARGET_FPS)
 
 
@@ -143,6 +150,44 @@ async def stop_simulation():
 class ControlCommand(BaseModel):
     action: str
     value: Optional[float] = None
+
+
+class ReviewCommand(BaseModel):
+    decision: Literal["approve", "reject", "edit"]
+    reviewer: str = Field(min_length=2, max_length=80)
+    note: str = Field(default="", max_length=500)
+    edited_action: Optional[str] = None
+    scope: Literal["timeline", "manual"] = "timeline"
+
+
+@app.get("/api/recommendations")
+async def recommendations(scope: str = "timeline"):
+    orchestrator = manual_orchestrator if scope == "manual" else engine.orchestrator
+    if orchestrator is None:
+        return []
+    return orchestrator.pending_recommendations()
+
+
+@app.post("/api/recommendations/{recommendation_id}/decision")
+async def review_recommendation(recommendation_id: str, cmd: ReviewCommand):
+    orchestrator = manual_orchestrator if cmd.scope == "manual" else engine.orchestrator
+    if orchestrator is None:
+        raise HTTPException(404, "simulation scope not initialized")
+    try:
+        result = orchestrator.review_recommendation(
+            recommendation_id=recommendation_id,
+            decision=cmd.decision,
+            reviewer=cmd.reviewer,
+            note=cmd.note,
+            edited_action=cmd.edited_action,
+        )
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return result
 
 
 @app.post("/api/control")
@@ -311,6 +356,8 @@ async def _process_manual_tick(cmd: ManualTickCommand):
             "risk_score": tick_summary["risk_score"],
             "alert_level": tick_summary["alert_level"],
             "decisions": decisions,
+            "recommendations": tick_summary.get("recommendations", []),
+            "pending_recommendations": tick_summary.get("pending_recommendations", []),
             "dyatlov": tick_summary["dyatlov"],
             "llm_stats": tick_summary["llm_stats"],
             "audit_log": tick_summary.get("audit_log", []),
@@ -343,6 +390,7 @@ async def _process_manual_tick(cmd: ManualTickCommand):
         "risk_score": tick_summary["risk_score"],
         "alert_level": tick_summary["alert_level"],
         "decisions": decisions,
+        "pending_recommendations": tick_summary.get("pending_recommendations", []),
     }
 
 

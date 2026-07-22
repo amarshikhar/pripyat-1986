@@ -10,7 +10,7 @@ Each agent:
 
 CRoF (Control Room of the Future) Architecture:
 - RiskAgent: AI-powered risk assessment with compound threat detection
-- DecisionAgent: AI-powered decision-making with safety guardrails
+- RecommendationAgent: AI-assisted recommendation drafting with mandatory review
 - SensorAgent/EvacuationAgent/CommsAgent: Deterministic (legitimately rule-based)
 
 Azure Migration:
@@ -493,7 +493,7 @@ class RiskAgent:
 
         msg = AgentMessage(
             source=self.name,
-            target="DecisionAgent",
+            target="RecommendationAgent",
             msg_type="RISK_SCORE",
             timestamp=state.timestamp,
             alert_level=level,
@@ -522,24 +522,21 @@ _LLM_URGENCY_TO_LEVEL = {
 }
 
 
-class DecisionAgent:
+class RecommendationAgent:
     """
-    AI-powered Decision Agent — the brain of the CRoF system.
-    Uses LLM to decide what action to take, with rule-based safety guardrails
-    that can never be weakened by AI output.
+    AI recommendation agent.
 
-    Guardrail pattern:
-    - Rules run first → hard_actions (non-negotiable safety floor)
-    - LLM runs at decision points → llm_actions (can add actions, cannot remove)
-    - Final actions = hard_actions UNION llm_actions
-    - LLM can act EARLIER than rules (proactive safety)
-    - LLM CANNOT prevent a rule-triggered action (rules always win)
+    It can explain risk and draft proposed actions, but it has no actuator
+    authority. Every returned action is marked ``pending_review`` and must be
+    resolved by a human supervisor. The independent deterministic
+    ``SafetyKernel`` owns hard protective trips; keeping that kernel outside
+    the agent prevents an LLM score or prompt from becoming a safety control.
 
-    CRoF Role: Autonomous EMS switching agent (NERC CIP-014 equivalent).
+    CRoF Role: operator decision-support and recommendation drafting.
     Azure equivalent: Microsoft Agent Framework with Semantic Kernel.
     """
 
-    name = "DecisionAgent"
+    name = "RecommendationAgent"
     LLM_COOLDOWN_TICKS = 5  # Min ticks between LLM calls when alerts persist
 
     def __init__(self, llm_client: Optional['LLMClient'] = None):
@@ -552,7 +549,7 @@ class DecisionAgent:
 
     def _is_decision_point(self, state: ReactorState, risk_score: int,
                             sensor_alerts: list[AgentMessage] = None) -> bool:
-        """Determine if this tick warrants an LLM decision call."""
+        """Determine if this tick warrants an LLM recommendation call."""
         if not LLM_CONFIG.get("decision_points_only", True):
             return True
         # Skip LLM in manual mode (including post-SCRAM decay)
@@ -589,13 +586,13 @@ class DecisionAgent:
         """How many decisions have been made since last LLM call."""
         return len(self.decisions) - self._last_llm_tick if self._last_llm_tick >= 0 else 999
 
-    def _rule_based_actions(self, state: ReactorState, risk_score: int,
+    def _rule_based_recommendations(self, state: ReactorState, risk_score: int,
                             sensor_alerts: list[AgentMessage] = None) -> list[AgentAction]:
-        """Safety guardrails — these ALWAYS run and cannot be overridden."""
+        """Deterministic recommendation rules; outputs remain inert."""
         actions = []
         counterfactual = AI_COUNTERFACTUAL_DECISIONS.get(state.timestamp)
 
-        # GUARDRAIL 1: Emergency shutdown if risk > 85
+        # PROPOSAL RULE 1: recommend emergency shutdown if risk > 85
         if risk_score >= RISK_CONFIG["escalation_threshold"] and not self.reactor_scrammed:
             reasoning = self._fallback_reasoning(state, risk_score)
             actions.append(AgentAction(
@@ -607,12 +604,13 @@ class DecisionAgent:
                 metadata={
                     "risk_score": risk_score,
                     "counterfactual": counterfactual,
-                    "override_authority": "Dyatlov",
+                    "review_authority": "human_supervisor",
                     "source": "rule",
                 },
             ))
 
-        # GUARDRAIL 2: Compound violation — EMERGENCY sensor alert + ECCS disabled = auto-SCRAM
+        # PROPOSAL RULE 2: compound violation recommendation. The independent
+        # SafetyKernel separately evaluates whether raw telemetry requires a trip.
         if not self.reactor_scrammed and not state.eccs_active and sensor_alerts:
             has_emergency = any(
                 a.alert_level == AlertLevel.EMERGENCY
@@ -632,12 +630,12 @@ class DecisionAgent:
                         "risk_score": risk_score,
                         "trigger": "compound_eccs_emergency",
                         "counterfactual": counterfactual,
-                        "override_authority": "Dyatlov",
+                        "review_authority": "human_supervisor",
                         "source": "rule",
                     },
                 ))
 
-        # GUARDRAIL 3: Evacuate if radiation is dangerous
+        # PROPOSAL RULE 3: recommend evacuation if radiation is dangerous
         if (state.radiation_mrem_h >= THRESHOLDS["radiation_mrem_h"]["dangerous"]
                 and not self.evacuation_ordered):
             actions.append(AgentAction(
@@ -655,7 +653,7 @@ class DecisionAgent:
 
         return actions
 
-    async def _llm_decide(self, state: ReactorState, risk_score: int,
+    async def _llm_recommend(self, state: ReactorState, risk_score: int,
                      sensor_alerts: list[AgentMessage]) -> Optional[dict]:
         """Call LLM for a structured decision."""
         if not self.llm or not self.llm.available:
@@ -687,7 +685,7 @@ class DecisionAgent:
             f"PREVIOUS AI DECISIONS: {prev_decisions}\n"
             f"REACTOR SCRAMMED: {self.reactor_scrammed}\n"
             f"EVACUATION ORDERED: {self.evacuation_ordered}\n\n"
-            f"What is your decision? Consider compound risks and operator behavior."
+            f"What should the supervisor review? Provide one evidence-grounded recommendation."
         )
 
         return await self.llm.call_structured(
@@ -727,7 +725,7 @@ class DecisionAgent:
 
         urgency = llm_data.get("urgency", "medium")
         level = _LLM_URGENCY_TO_LEVEL.get(urgency, AlertLevel.WARNING)
-        reasoning = llm_data.get("reasoning", "AI decision")
+        reasoning = llm_data.get("reasoning", "AI recommendation")
         counterfactual = AI_COUNTERFACTUAL_DECISIONS.get(state.timestamp)
 
         actions.append(AgentAction(
@@ -741,7 +739,7 @@ class DecisionAgent:
                 "source": "llm",
                 "counterfactual": counterfactual,
                 "safety_violations": llm_data.get("safety_violations", []),
-                "override_operator": llm_data.get("override_operator", False),
+                "human_review_required": llm_data.get("human_review_required", True),
                 "additional_actions": llm_data.get("additional_actions", []),
             },
         ))
@@ -752,16 +750,15 @@ class DecisionAgent:
         self, state: ReactorState, risk_score: int, sensor_alerts: list[AgentMessage]
     ) -> list[AgentAction]:
         """
-        Make decisions using AI + safety guardrails.
-        Guardrails always run. LLM adds proactive decisions at key moments.
+        Draft recommendations. This method never changes plant state.
         """
-        # Step 1: Safety guardrails (always run, non-negotiable)
-        hard_actions = self._rule_based_actions(state, risk_score, sensor_alerts)
+        # Step 1: deterministic proposal rules (still no actuator authority)
+        rule_proposals = self._rule_based_recommendations(state, risk_score, sensor_alerts)
 
-        # Step 2: AI decision at decision points
+        # Step 2: AI recommendation at decision points
         llm_actions = []
         if self._is_decision_point(state, risk_score, sensor_alerts) and not self.reactor_scrammed:
-            llm_data = await self._llm_decide(state, risk_score, sensor_alerts)
+            llm_data = await self._llm_recommend(state, risk_score, sensor_alerts)
             if llm_data:
                 llm_actions = self._llm_actions_from_response(llm_data, state, risk_score)
                 # Track cooldown
@@ -772,23 +769,27 @@ class DecisionAgent:
                     _severity = {AlertLevel.CRITICAL: 1, AlertLevel.EMERGENCY: 2}
                     self._last_alert_level = max(levels, key=lambda l: _severity.get(l, 0), default=None) if levels else None
 
-        # Step 3: Merge — hard_actions UNION llm_actions (no duplicates)
-        hard_action_names = {a.action for a in hard_actions}
-        merged = list(hard_actions)
+        # Step 3: merge rule and LLM proposals (no duplicates)
+        rule_action_names = {a.action for a in rule_proposals}
+        merged = list(rule_proposals)
         for la in llm_actions:
-            if la.action not in hard_action_names:
+            if la.action not in rule_action_names:
                 merged.append(la)
 
         # Step 4: Fallback — if no LLM and no guardrail triggered, check rule-based extras
-        if not llm_actions and not hard_actions:
+        if not llm_actions and not rule_proposals:
             merged.extend(self._rule_based_extras(state))
 
-        # Step 5: Update state based on actions taken
+        # Step 5: proposals are inert until the orchestrator records a human
+        # decision. The metadata is the enforcement boundary used by every
+        # downstream consumer.
         for action in merged:
-            if "SCRAM" in action.action and not self.reactor_scrammed:
-                self.reactor_scrammed = True
-            if "EVACUATION" in action.action and not self.evacuation_ordered:
-                self.evacuation_ordered = True
+            action.agent = self.name
+            action.metadata.update({
+                "status": "pending_review",
+                "execution_authority": "human_supervisor",
+                "executed": False,
+            })
 
         self.decisions.extend(merged)
         return merged
@@ -850,8 +851,13 @@ class DecisionAgent:
             f"Risk score {risk_score}/100 exceeds emergency threshold. "
             + " | ".join(reasons)
             + " | INSAG-7 mandates immediate shutdown under these conditions. "
-            + "Overriding operator authority per safety protocol."
+            + "Escalating for immediate supervisor review; no agent actuator authority."
         )
+
+
+# Backwards-compatible import for older demo scripts. The implementation and
+# runtime identity are recommendation-only; this alias has no extra authority.
+DecisionAgent = RecommendationAgent
 
 
 # ── AGENT 4: EVACUATION PLANNER ───────────────────────────────────

@@ -13,6 +13,7 @@ import os
 from datetime import datetime, timezone
 from dataclasses import asdict
 from typing import Optional
+from uuid import uuid4
 
 from config import OUTPUT_DIR, STATE_FILE
 from timeline_data import ReactorState, AI_COUNTERFACTUAL_DECISIONS
@@ -24,6 +25,7 @@ from agents import (
 from llm_client import LLMClient
 from cosmos_logger import CosmosLogger
 from audit_logger import AuditLogger
+from case_store import CaseAuditStore
 from governance import Recommendation, SafetyKernel
 
 
@@ -66,7 +68,7 @@ class Orchestrator:
     State is accumulated and can be serialized for dashboard/audit.
     """
 
-    def __init__(self):
+    def __init__(self, store: Optional[CaseAuditStore] = None, scope: str = "timeline"):
         self.bus = MessageBus()
         self.audit = AuditLogger()  # Audit trail for dashboard log panel
         self.llm = LLMClient(audit=self.audit)  # Shared LLM client for AI-powered agents
@@ -78,6 +80,9 @@ class Orchestrator:
         self.dyatlov = DyatlovAgent(llm_client=self.llm)
         self.evacuation = EvacuationAgent()
         self.comms = CommsAgent()
+        self.store = store or CaseAuditStore()
+        self.scope = scope
+        self.run_id = f"RUN-{uuid4().hex[:10].upper()}"
 
         # Accumulated state for dashboard
         self.tick_count = 0
@@ -103,7 +108,9 @@ class Orchestrator:
 
         os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    def _register_recommendations(self, proposals: list[AgentAction]) -> list[Recommendation]:
+    def _register_recommendations(
+        self, proposals: list[AgentAction], agent_input: Optional[dict] = None,
+    ) -> list[Recommendation]:
         created: list[Recommendation] = []
         for proposal in proposals:
             existing_id = self._recommendation_by_action.get(proposal.action)
@@ -114,6 +121,33 @@ class Orchestrator:
             self.recommendations[recommendation.id] = recommendation
             self._recommendation_by_action[proposal.action] = recommendation.id
             created.append(recommendation)
+            case_record = {
+                **recommendation.as_dict(),
+                "run_id": self.run_id,
+                "created_ts": datetime.now(timezone.utc).isoformat(),
+                "sim_timestamp": proposal.timestamp,
+                "scope": self.scope,
+                "agent_input": agent_input or {},
+                "evidence": {
+                    "authority_boundary": {
+                        "agent_actuator_authority": False,
+                        "required_reviewer": "human_supervisor",
+                        "safety_kernel_independent": True,
+                    },
+                    "proposal_metadata": proposal.metadata,
+                },
+                "trace": [
+                    {"step": "telemetry_input", "detail": (agent_input or {}).get("reactor", {})},
+                    {"step": "risk_assessment", "detail": (agent_input or {}).get("risk", {})},
+                    {"step": "recommendation", "detail": recommendation.as_dict()},
+                ],
+            }
+            self.store.create_case(case_record)
+            self.store.add_audit_event(
+                self.run_id, proposal.timestamp, self.tick_count,
+                "RecommendationAgent", "case_created", "case", recommendation.id,
+                "pending_review", {"action": proposal.action, "level": proposal.alert_level.value},
+            )
             self.audit.log(
                 agent="RecommendationAgent", log_type="RECOMMENDATION_CREATED",
                 direction="OUTPUT", detail=f"{recommendation.id}: {proposal.action}",
@@ -150,25 +184,42 @@ class Orchestrator:
             "ABORT TEST",
             "ECCS VIOLATION WARNING",
         }
+        final_action = recommendation.action.action
         if decision == "edit":
             if edited_action not in allowed_actions:
                 raise ValueError("edited action is not in the approved control vocabulary")
-            recommendation.action.action = edited_action
-            recommendation.status = "approved_with_edits"
+            final_action = edited_action
+            final_status = "approved_with_edits"
         elif decision == "approve":
-            recommendation.status = "approved"
+            final_status = "approved"
         else:
-            recommendation.status = "rejected"
+            final_status = "rejected"
 
-        recommendation.reviewer = reviewer.strip()
-        recommendation.note = note.strip()
-        recommendation.reviewed_at = datetime.now(timezone.utc).isoformat()
+        reviewed_at = datetime.now(timezone.utc).isoformat()
+        review_record = {
+            "status": final_status,
+            "action": final_action,
+            "reviewer": reviewer.strip(),
+            "note": note.strip(),
+            "reviewed_at": reviewed_at,
+            "executed": False,
+        }
+        # Persist the final decision first. The conditional UPDATE makes the
+        # review idempotent even if two browser tabs submit at the same time.
+        self.store.update_case_review(recommendation_id, review_record)
+
+        recommendation.action.action = final_action
+        recommendation.status = final_status
+        recommendation.reviewer = review_record["reviewer"]
+        recommendation.note = review_record["note"]
+        recommendation.reviewed_at = reviewed_at
 
         if recommendation.status in {"approved", "approved_with_edits"}:
             proposal = recommendation.action
             proposal.metadata.update({
                 "status": recommendation.status,
-                "executed": True,
+                "executed": False,
+                "queued": True,
                 "source": "human_approved",
                 "reviewer": recommendation.reviewer,
                 "recommendation_id": recommendation.id,
@@ -181,6 +232,11 @@ class Orchestrator:
             direction="DECISION", detail=f"{recommendation.id}: {recommendation.status}",
             source="human", status=recommendation.status,
             data=recommendation.as_dict(),
+        )
+        self.store.add_audit_event(
+            self.run_id, recommendation.action.timestamp, self.tick_count,
+            f"human:{recommendation.reviewer}", "case_reviewed", "case",
+            recommendation.id, recommendation.status, recommendation.as_dict(),
         )
         self.cosmos.log_decision(
             f"human:{recommendation.reviewer}", self.tick_count,
@@ -213,6 +269,15 @@ class Orchestrator:
         reviewed_actions = list(self._reviewed_actions)
         self._reviewed_actions.clear()
         for d in reviewed_actions:
+            d.metadata.update({"executed": True, "queued": False})
+            recommendation_id = d.metadata.get("recommendation_id")
+            if recommendation_id:
+                self.store.mark_case_executed(recommendation_id)
+                self.store.add_audit_event(
+                    self.run_id, state.timestamp, self.tick_count,
+                    "Orchestrator", "case_action_executed", "case",
+                    recommendation_id, "executed", {"action": d.action},
+                )
             self.bus.publish_action(d)
             self.all_actions.append(d)
             self.audit.log(
@@ -276,7 +341,29 @@ class Orchestrator:
             proposals = [proposal for proposal in proposals if "SCRAM" not in proposal.action]
         if any("EVACUATION" in action.action for action in reviewed_actions):
             proposals = [proposal for proposal in proposals if "EVACUATION" not in proposal.action]
-        new_recommendations = self._register_recommendations(proposals)
+        new_recommendations = self._register_recommendations(proposals, {
+            "reactor": asdict(state),
+            "risk": {
+                "score": risk_score,
+                "rule_score": risk_msg.payload.get("rule_score"),
+                "source": risk_msg.payload.get("source", "rule"),
+                "component_scores": risk_msg.payload.get("component_scores", {}),
+                "ai_reasoning": risk_msg.payload.get("ai_reasoning"),
+            },
+            "sensor_alerts": [
+                {
+                    "type": alert.msg_type,
+                    "level": alert.alert_level.value,
+                    "payload": alert.payload,
+                }
+                for alert in sensor_alerts
+            ],
+            "historical_context": {
+                "event": state.event_description,
+                "operator_action": state.actual_human_decision,
+                "counterfactual": AI_COUNTERFACTUAL_DECISIONS.get(state.timestamp),
+            },
+        })
         if not proposals:
             if self.reactor_scrammed or self.evacuation_ordered:
                 detail = f"Monitoring continues — prior actions in effect (risk={risk_score})"
@@ -388,6 +475,9 @@ class Orchestrator:
         # ── Build tick summary ────────────────────────────────────
         counterfactual = AI_COUNTERFACTUAL_DECISIONS.get(state.timestamp)
 
+        audit_entries = self.audit.drain()
+        self.store.append_audit(self.run_id, audit_entries)
+
         summary = {
             "tick": self.tick_count,
             "timestamp": state.timestamp,
@@ -441,7 +531,7 @@ class Orchestrator:
                 "awaiting_human_review": bool(self.pending_recommendations()),
             },
             "llm_stats": self.llm.get_stats(),
-            "audit_log": self.audit.drain(),  # Drain per-tick audit entries
+            "audit_log": audit_entries,
         }
 
         self.history.append(summary)
@@ -480,6 +570,7 @@ class Orchestrator:
         self.total_override_attempts = 0
         self.total_override_failures = 0
         self.total_override_delays = 0
+        self.run_id = f"RUN-{uuid4().hex[:10].upper()}"
 
     def get_state_snapshot(self) -> dict:
         """Return serializable state snapshot."""

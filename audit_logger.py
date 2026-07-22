@@ -1,8 +1,8 @@
 """
 PRIPYAT-1986 Audit Logger
-Lightweight in-memory audit trail for every agent, LLM, guardrail,
-and physics calculation. Designed for zero-latency impact — just
-appends dicts to a list per tick, drained after each tick.
+Lightweight per-tick audit buffer for every agent, LLM, guardrail,
+and physics calculation. The orchestrator drains each tick into the durable
+CaseAuditStore before the same entries are broadcast to the dashboard.
 
 Deduplication: Consecutive identical entries (same agent, type, detail)
 are collapsed into a single entry with a repeat count, keeping the log

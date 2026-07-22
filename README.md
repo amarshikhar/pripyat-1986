@@ -104,6 +104,18 @@ python main.py --smoke-test
 python -m unittest discover -s tests -v
 ```
 
+### Web workspaces
+
+The showcase UI is organized around the operator’s task:
+
+- **Simulation** — historical replay, governed counterfactual, live recommendations, and safety trips.
+- **Manual Lab** — operator-controlled reactor inputs routed through the same safety and review pipeline.
+- **Triage / Cases** — persistent case queue with raw telemetry, risk components, sensor evidence, historical context, decision trace, and signed human outcome.
+- **Evaluations** — a frozen, no-LLM authority-routing benchmark with confusion matrix, per-class precision/recall, false-trip rate, and per-scenario explanations.
+- **Audit** — persistent, filterable events linked to cases and simulation runs.
+
+Cases and audit events are stored in `output/pripyat.db` by default. Set `PRIPYAT_DB_PATH` to use another SQLite path.
+
 ### CLI Options
 
 | Flag | Description | Default |
@@ -155,6 +167,8 @@ pripyat-1986/
 ├── main.py              # Entry point — CLI, simulation loop
 ├── agents.py            # Advisory agents (Sensor, Risk, Recommendation, Evac, Comms, Dyatlov)
 ├── governance.py        # Deterministic SafetyKernel + human-review records
+├── case_store.py        # SQLite-backed triage cases + durable audit events
+├── evaluation.py        # Frozen explainable eval set + confusion matrix
 ├── orchestrator.py      # Message bus + agent coordination pipeline
 ├── simulator.py         # Historical event replay engine with interpolation
 ├── timeline_data.py     # Chernobyl timeline events + reactor state data
@@ -165,6 +179,7 @@ pripyat-1986/
 ├── dashboard.py         # Rich terminal UI
 ├── web.py               # FastAPI + WebSocket server
 ├── static/              # Browser dashboard (HTML/CSS/JS + Plotly)
+├── tests/               # Governance, persistence, audit, and eval regressions
 ├── docs/                # Security model, responsible AI, operator UX, reusability
 ├── infra/               # Azure deployment guide
 ├── .env.example         # Environment template
@@ -197,7 +212,7 @@ The architecture maps directly to Azure services for production deployment:
 | Component | Current (Prototype) | Azure (Production) |
 |-----------|-------------------|-------------------|
 | Event stream | In-memory bus | Azure Event Hubs |
-| State store | JSON files | Azure Cosmos DB |
+| Case/audit store | SQLite (`output/pripyat.db`) | Azure Cosmos DB / managed Postgres |
 | LLM reasoning | OpenAI API | Azure OpenAI Service |
 | Agent framework | Custom Python | Semantic Kernel / AI Foundry |
 | Dashboard | FastAPI + static | Blazor / React on App Service |

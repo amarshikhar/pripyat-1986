@@ -30,6 +30,8 @@ const MAX_POINTS = 2000;
 let ws = null;
 let logEntryCount = 0;
 let speedDebounceTimer = null;
+let currentWorkspace = 'simulation';
+let selectedCaseId = null;
 
 // Track which pipeline agents have been activated (persistent highlighting)
 const pipelineActivated = { pipeS: false, pipeR: false, pipeD: false, pipeE: false, pipeC: false };
@@ -197,14 +199,14 @@ function handleComplete(report) {
             <div class="cf-cards">
                 <div class="cf-card actual">
                     <div class="cf-card-title">What Happened (1986)</div>
-                    <p><strong>Explosion:</strong> ${report.actual_timeline?.explosion || 'Apr 26, 01:23:40'}</p>
+                    <p><strong>Explosion:</strong> ${escapeHtml(report.actual_timeline?.explosion || 'Apr 26, 01:23:40')}</p>
                     <p><strong>Evacuation:</strong> 36 hours delayed</p>
                     <p><strong>Deaths:</strong> 31 immediate, ~4000 long-term</p>
                 </div>
                 <div class="cf-card ai">
                     <div class="cf-card-title">Governed Timeline</div>
-                    <p><strong>SCRAM ordered:</strong> ${report.ai_timeline.scram_ordered}</p>
-                    <p><strong>Evacuation:</strong> ${report.ai_timeline.evacuation_hours_earlier ? report.ai_timeline.evacuation_hours_earlier + 'h earlier' : 'N/A'}</p>
+                    <p><strong>SCRAM ordered:</strong> ${escapeHtml(report.ai_timeline.scram_ordered)}</p>
+                    <p><strong>Evacuation:</strong> ${escapeHtml(report.ai_timeline.evacuation_hours_earlier ? report.ai_timeline.evacuation_hours_earlier + 'h earlier' : 'N/A')}</p>
                     <p><strong>Explosion prevented:</strong> ${report.ai_timeline.explosion_prevented ? 'YES' : 'NO'}</p>
                 </div>
             </div>
@@ -299,7 +301,7 @@ let manualTickCounter = 0;
 let manualTickInterval = null;  // Continuous tick interval
 const MANUAL_TICK_RATE_MS = 1500;  // 1.5s per tick — smooth like real control room
 
-function toggleManualMode() {
+function toggleManualMode(resumeTimeline = true, resetSession = true) {
     manualMode = !manualMode;
     const btn = document.getElementById('manualBtn');
     const panel = document.getElementById('manualPanel');
@@ -354,8 +356,8 @@ function toggleManualMode() {
         document.getElementById('scrubber').disabled = false;
         document.getElementById('speedSlider').disabled = false;
         // Reset manual orchestrator and resume
-        fetch('/api/manual_reset', { method: 'POST' });
-        sendControl('play');
+        if (resetSession) fetch('/api/manual_reset', { method: 'POST' });
+        if (resumeTimeline) sendControl('play');
     }
 }
 
@@ -517,26 +519,210 @@ async function submitReview(recommendationId, decision) {
         window.alert('Enter the supervisor name before signing the decision.');
         return;
     }
-    const response = await fetch(`/api/recommendations/${recommendationId}/decision`, {
+    const result = await postReview(recommendationId, decision, reviewer, note, manualMode ? 'manual' : 'timeline');
+    if (!result) return;
+    document.querySelector(`.review-card[data-id="${recommendationId}"]`)?.remove();
+    if (!document.querySelector('.review-card')) {
+        document.getElementById('reviewSection').style.display = 'none';
+    }
+    if (!manualMode && !state.playing) sendControl('play');
+}
+
+async function postReview(recommendationId, decision, reviewer, note, scope) {
+    const response = await fetch(`/api/recommendations/${encodeURIComponent(recommendationId)}/decision`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             decision,
             reviewer,
             note,
-            scope: manualMode ? 'manual' : 'timeline',
+            scope,
         }),
     });
     const result = await response.json();
     if (!response.ok) {
         window.alert(result.detail || 'Unable to record decision.');
-        return;
+        return null;
     }
-    document.querySelector(`.review-card[data-id="${recommendationId}"]`)?.remove();
-    if (!document.querySelector('.review-card')) {
-        document.getElementById('reviewSection').style.display = 'none';
+    return result;
+}
+
+// ── Workspace navigation + persistent governance views ─────────
+
+function switchWorkspace(workspace) {
+    const allowed = ['simulation', 'manual', 'cases', 'evals', 'audit'];
+    if (!allowed.includes(workspace)) return;
+
+    if (workspace === 'manual' && !manualMode) {
+        toggleManualMode(false, false);
+    } else if (currentWorkspace === 'manual' && workspace !== 'manual' && manualMode) {
+        // Preserve the manual orchestrator when moving to its case queue.
+        toggleManualMode(workspace === 'simulation', workspace === 'simulation');
     }
-    if (!manualMode && !state.playing) sendControl('play');
+    if (workspace === 'simulation' && currentWorkspace !== 'simulation') {
+        fetch('/api/manual_reset', { method: 'POST' });
+    }
+
+    currentWorkspace = workspace;
+    const operational = workspace === 'simulation' || workspace === 'manual';
+    document.getElementById('operationsView').hidden = !operational;
+    document.getElementById('operationControls').hidden = !operational;
+    document.getElementById('casesView').hidden = workspace !== 'cases';
+    document.getElementById('evalsView').hidden = workspace !== 'evals';
+    document.getElementById('auditView').hidden = workspace !== 'audit';
+    document.querySelectorAll('.workspace-tab').forEach(tab => {
+        tab.classList.toggle('active', tab.dataset.workspace === workspace);
+    });
+
+    if (workspace === 'cases') loadCases();
+    if (workspace === 'evals') loadEvaluations();
+    if (workspace === 'audit') loadPersistentAudit();
+    if (operational) requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
+}
+
+function formatStatus(value) {
+    return String(value || '').replaceAll('_', ' ').toUpperCase();
+}
+
+function pretty(value) {
+    return escapeHtml(JSON.stringify(value ?? {}, null, 2));
+}
+
+async function loadCases() {
+    const list = document.getElementById('caseList');
+    list.innerHTML = '<div class="empty-state">Loading cases…</div>';
+    const status = document.getElementById('caseStatusFilter').value;
+    try {
+        const response = await fetch(`/api/cases?limit=200${status ? `&status=${encodeURIComponent(status)}` : ''}`);
+        if (!response.ok) throw new Error('Unable to load cases');
+        const cases = await response.json();
+        if (!cases.length) {
+            list.innerHTML = '<div class="empty-state">No cases match this filter. Run the simulation or manual lab to generate one.</div>';
+            return;
+        }
+        list.innerHTML = cases.map(item => `
+            <button class="case-list-item ${item.id === selectedCaseId ? 'selected' : ''}" onclick="loadCaseDetail('${escapeHtml(item.id)}')">
+                <div class="case-list-top"><span>${escapeHtml(item.id)}</span><span class="status-chip ${escapeHtml(item.status)}">${formatStatus(item.status)}</span></div>
+                <div class="case-list-action">${escapeHtml(item.action)}</div>
+                <div class="case-list-meta">${escapeHtml(item.scope)} · ${escapeHtml(item.sim_timestamp)} · ${escapeHtml(item.source)}</div>
+            </button>
+        `).join('');
+        if (!selectedCaseId) loadCaseDetail(cases[0].id);
+    } catch (error) {
+        list.innerHTML = `<div class="error-state">${escapeHtml(error.message)}</div>`;
+    }
+}
+
+async function loadCaseDetail(caseId) {
+    selectedCaseId = caseId;
+    const detail = document.getElementById('caseDetail');
+    detail.innerHTML = '<div class="empty-state">Loading case evidence…</div>';
+    document.querySelectorAll('.case-list-item').forEach(item => item.classList.toggle('selected', item.textContent.includes(caseId)));
+    try {
+        const response = await fetch(`/api/cases/${encodeURIComponent(caseId)}`);
+        if (!response.ok) throw new Error('Case not found');
+        const item = await response.json();
+        const input = item.agent_input || {};
+        const reactor = input.reactor || {};
+        const risk = input.risk || {};
+        const history = input.historical_context || {};
+        const reviewControls = item.status === 'pending_review' ? `
+            <div class="case-review-box">
+                <div class="panel-title">Signed supervisor decision</div>
+                <input id="caseReviewer" value="Shift Supervisor" aria-label="Reviewer name">
+                <textarea id="caseReviewNote" placeholder="Evidence-based decision note"></textarea>
+                <div class="review-actions">
+                    <button class="btn review-approve" onclick="reviewCase('${escapeHtml(item.id)}','approve','${escapeHtml(item.scope)}')">APPROVE</button>
+                    <button class="btn review-reject" onclick="reviewCase('${escapeHtml(item.id)}','reject','${escapeHtml(item.scope)}')">REJECT</button>
+                </div>
+            </div>` : `
+            <div class="signed-decision"><strong>${formatStatus(item.status)}</strong> by ${escapeHtml(item.reviewer || 'unknown')}<br>${escapeHtml(item.note || 'No review note supplied.')}</div>`;
+        detail.innerHTML = `
+            <div class="case-title-row"><div><div class="eyebrow">${escapeHtml(item.id)} · ${escapeHtml(item.run_id)}</div><h2>${escapeHtml(item.action)}</h2></div><span class="status-chip ${escapeHtml(item.status)}">${formatStatus(item.status)}</span></div>
+            <p class="case-reasoning">${escapeHtml(item.reasoning)}</p>
+            <div class="detail-kpis">
+                <div><span>Scope</span><strong>${escapeHtml(item.scope)}</strong></div>
+                <div><span>Level</span><strong>${escapeHtml(item.level)}</strong></div>
+                <div><span>Source</span><strong>${escapeHtml(item.source)}</strong></div>
+                <div><span>Executed</span><strong>${item.executed ? 'YES' : 'NO'}</strong></div>
+            </div>
+            ${reviewControls}
+            <div class="detail-section"><h3>Agent input · raw reactor telemetry</h3><div class="telemetry-grid">${Object.entries(reactor).filter(([key]) => !['tags','event_description','actual_human_decision'].includes(key)).map(([key,value]) => `<div><span>${escapeHtml(key)}</span><strong>${escapeHtml(value)}</strong></div>`).join('')}</div></div>
+            <div class="detail-section"><h3>Risk decomposition</h3><div class="telemetry-grid">${Object.entries(risk.component_scores || {}).map(([key,value]) => `<div><span>${escapeHtml(key)}</span><strong>${escapeHtml(value)}</strong></div>`).join('')}</div><p>Rule score ${escapeHtml(risk.rule_score)} · final score ${escapeHtml(risk.score)} · source ${escapeHtml(risk.source)}</p></div>
+            <div class="detail-section"><h3>Sensor alerts</h3>${(input.sensor_alerts || []).length ? `<pre>${pretty(input.sensor_alerts)}</pre>` : '<p>No active sensor alerts.</p>'}</div>
+            <div class="detail-section"><h3>Historical context supplied to the agent</h3><p><strong>Event:</strong> ${escapeHtml(history.event || 'None')}</p><p><strong>Recorded operator action:</strong> ${escapeHtml(history.operator_action || 'None')}</p></div>
+            <details class="detail-section"><summary>Decision trace</summary><pre>${pretty(item.trace)}</pre></details>
+            <details class="detail-section"><summary>Authority evidence</summary><pre>${pretty(item.evidence)}</pre></details>
+        `;
+    } catch (error) {
+        detail.innerHTML = `<div class="error-state">${escapeHtml(error.message)}</div>`;
+    }
+}
+
+async function reviewCase(caseId, decision, scope) {
+    const reviewer = document.getElementById('caseReviewer').value.trim();
+    const note = document.getElementById('caseReviewNote').value.trim();
+    if (reviewer.length < 2) return window.alert('Enter the supervisor name before signing the decision.');
+    const result = await postReview(caseId, decision, reviewer, note, scope);
+    if (!result) return;
+    await loadCases();
+    await loadCaseDetail(caseId);
+}
+
+async function loadEvaluations() {
+    const summary = document.getElementById('evalSummary');
+    summary.innerHTML = '<div class="empty-state">Running frozen benchmark…</div>';
+    try {
+        const response = await fetch('/api/evals');
+        if (!response.ok) throw new Error('Evaluation failed');
+        const report = await response.json();
+        const stats = report.summary;
+        summary.innerHTML = [
+            ['Accuracy', `${Math.round(stats.accuracy * 100)}%`],
+            ['Scenarios', stats.scenario_count],
+            ['Trip recall', `${Math.round(stats.protective_trip_recall * 100)}%`],
+            ['False trip rate', `${Math.round(stats.false_protective_trip_rate * 100)}%`],
+        ].map(([label,value]) => `<div class="metric-card"><span>${label}</span><strong>${value}</strong></div>`).join('');
+        const labels = report.labels;
+        document.getElementById('confusionMatrix').innerHTML = `<table class="matrix-table"><thead><tr><th>Expected \\ Predicted</th>${labels.map(label => `<th>${formatStatus(label)}</th>`).join('')}</tr></thead><tbody>${labels.map(truth => `<tr><th>${formatStatus(truth)}</th>${labels.map(predicted => `<td class="${truth === predicted ? 'matrix-hit' : ''}">${report.confusion_matrix[truth][predicted]}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+        document.getElementById('classMetrics').innerHTML = labels.map(label => { const value = report.per_class[label]; return `<div class="class-metric"><strong>${formatStatus(label)}</strong><span>Precision ${value.precision === null ? '—' : Math.round(value.precision * 100) + '%'}</span><span>Recall ${value.recall === null ? '—' : Math.round(value.recall * 100) + '%'}</span><span>n=${value.support}</span></div>`; }).join('');
+        document.getElementById('evalResults').innerHTML = report.results.map(item => `
+            <details class="eval-case ${item.correct ? 'pass' : 'fail'}">
+                <summary><span>${item.correct ? 'PASS' : 'FAIL'}</span><strong>${escapeHtml(item.title)}</strong><em>${formatStatus(item.expected)} → ${formatStatus(item.predicted)}</em></summary>
+                <p>${escapeHtml(item.expected_rationale)}</p>
+                <div class="detail-kpis"><div><span>Risk score</span><strong>${item.explanation.risk_score}</strong></div><div><span>Authority</span><strong>${formatStatus(item.explanation.authority)}</strong></div></div>
+                <h4>Safety reasons</h4><pre>${pretty(item.explanation.safety_trip_reasons)}</pre>
+                <h4>Recommendations</h4><pre>${pretty(item.explanation.recommendations)}</pre>
+                <h4>Sensor alerts</h4><pre>${pretty(item.explanation.sensor_alerts)}</pre>
+            </details>`).join('');
+        document.getElementById('evalMethod').textContent = `${report.methodology.scope}. ${report.methodology.caveat}`;
+    } catch (error) {
+        summary.innerHTML = `<div class="error-state">${escapeHtml(error.message)}</div>`;
+    }
+}
+
+async function loadPersistentAudit() {
+    const body = document.getElementById('persistentAuditBody');
+    body.innerHTML = '<tr><td colspan="7" class="empty-state">Loading audit events…</td></tr>';
+    const entityId = document.getElementById('auditEntityFilter').value.trim();
+    try {
+        const response = await fetch(`/api/audit?limit=500${entityId ? `&entity_id=${encodeURIComponent(entityId)}` : ''}`);
+        if (!response.ok) throw new Error('Unable to load audit trail');
+        const events = await response.json();
+        document.getElementById('persistentAuditMeta').textContent = `${events.length} durable events${entityId ? ` for ${entityId}` : ''}`;
+        body.innerHTML = events.length ? events.map(event => {
+            const detail = event.detail?.detail || event.detail?.data || event.detail || {};
+            return `<tr><td>${escapeHtml(event.ts)}<br><span class="muted-text">sim ${escapeHtml(event.sim_timestamp)}</span></td><td>${escapeHtml(event.tick)}</td><td>${escapeHtml(event.actor)}</td><td>${escapeHtml(event.event_type)}</td><td>${escapeHtml(event.entity)}<br><button class="link-button" onclick="openAuditCase('${escapeHtml(event.entity_id)}')">${escapeHtml(event.entity_id)}</button></td><td><span class="status-chip ${escapeHtml(event.status)}">${formatStatus(event.status)}</span></td><td><pre>${pretty(detail)}</pre></td></tr>`;
+        }).join('') : '<tr><td colspan="7" class="empty-state">No audit events match this filter.</td></tr>';
+    } catch (error) {
+        body.innerHTML = `<tr><td colspan="7" class="error-state">${escapeHtml(error.message)}</td></tr>`;
+    }
+}
+
+function openAuditCase(entityId) {
+    if (!String(entityId).startsWith('REC-')) return;
+    switchWorkspace('cases');
+    loadCaseDetail(entityId);
 }
 
 function updateLLMStatus(stats) {
@@ -572,14 +758,15 @@ function addLogEntries(decisions, timestamp) {
     decisions.forEach(d => {
         const entry = document.createElement('div');
         entry.className = 'log-entry';
+        const safeLevel = ['NORMAL', 'WARNING', 'CRITICAL', 'EMERGENCY'].includes(d.level) ? d.level : '';
         entry.innerHTML = `
             <div class="log-entry-header">
-                <span class="log-time">${timeOnly}</span>
-                <span class="log-agent ${d.agent}">${d.agent}</span>
-                <span class="log-level ${d.level}">${d.level}</span>
+                <span class="log-time">${escapeHtml(timeOnly)}</span>
+                <span class="log-agent">${escapeHtml(d.agent)}</span>
+                <span class="log-level ${safeLevel}">${escapeHtml(d.level)}</span>
             </div>
-            <div class="log-action">${d.action}</div>
-            <div class="log-reasoning">${d.reasoning}</div>
+            <div class="log-action">${escapeHtml(d.action)}</div>
+            <div class="log-reasoning">${escapeHtml(d.reasoning)}</div>
         `;
         log.prepend(entry);
         logEntryCount++;
@@ -600,8 +787,8 @@ function updateHistory(event, decision) {
     const entry = document.createElement('div');
     entry.className = 'history-entry';
     entry.innerHTML = `
-        <div class="history-event">${event}</div>
-        ${decision ? `<div class="history-decision">${decision}</div>` : ''}
+        <div class="history-event">${escapeHtml(event)}</div>
+        ${decision ? `<div class="history-decision">${escapeHtml(decision)}</div>` : ''}
     `;
     el.appendChild(entry);  // chronological order — oldest at top, newest at bottom
     el.scrollTop = el.scrollHeight;
@@ -612,7 +799,7 @@ function updateEvacuation(evac) {
     el.innerHTML = `
         <div class="evac-stat">
             <span class="evac-stat-label">Phase</span>
-            <span class="evac-stat-value">${evac.phase}</span>
+            <span class="evac-stat-value">${escapeHtml(evac.phase)}</span>
         </div>
         <div class="evac-stat">
             <span class="evac-stat-label">People Evacuated</span>
@@ -623,7 +810,7 @@ function updateEvacuation(evac) {
             <span class="evac-stat-value">${evac.buses_in_transit.toLocaleString()}</span>
         </div>
         <div class="evac-progress-bar">
-            <div class="evac-progress-fill" style="width:${evac.percent_complete}%"></div>
+            <div class="evac-progress-fill" style="width:${Math.max(0, Math.min(100, Number(evac.percent_complete) || 0))}%"></div>
         </div>
         <div class="evac-stat">
             <span class="evac-stat-label">Completion</span>
@@ -631,7 +818,7 @@ function updateEvacuation(evac) {
         </div>
         ${evac.routes.map(r => `
             <div class="evac-route">
-                <span class="evac-route-name">${r.name}</span>
+                <span class="evac-route-name">${escapeHtml(r.name)}</span>
                 <span class="evac-route-count">${r.people_moved.toLocaleString()}</span>
             </div>
         `).join('')}
@@ -651,13 +838,13 @@ function updateCounterfactual(cf, simState) {
         <div class="cf-cards">
             <div class="cf-card actual">
                 <div class="cf-card-title">Actual Decision (1986)</div>
-                <p>${cf.reasoning || ''}</p>
+                <p>${escapeHtml(cf.reasoning || '')}</p>
             </div>
             <div class="cf-card ai">
                 <div class="cf-card-title">Recommended Intervention</div>
-                <p><strong>${cf.ai_decision}</strong></p>
-                <p>${cf.lives_saved || ''}</p>
-                <p>${cf.outcome || ''}</p>
+                <p><strong>${escapeHtml(cf.ai_decision)}</strong></p>
+                <p>${escapeHtml(cf.lives_saved || '')}</p>
+                <p>${escapeHtml(cf.outcome || '')}</p>
             </div>
         </div>
     `;
@@ -706,8 +893,8 @@ function updateDyatlov(data) {
     const entry = document.createElement('div');
     entry.className = 'dyatlov-chat-entry';
     entry.innerHTML = `
-        <span class="dyatlov-chat-time">${timeOnly}</span>
-        <span class="dyatlov-chat-text">"${quote}"</span>
+        <span class="dyatlov-chat-time">${escapeHtml(timeOnly)}</span>
+        <span class="dyatlov-chat-text">"${escapeHtml(quote)}"</span>
     `;
 
     // Color based on pressure
@@ -774,6 +961,12 @@ function initCharts() {
         ['chartRadiation', '#e74c3c', '#00d4ff'],
     ];
 
+    if (typeof window.Plotly === 'undefined') {
+        defs.forEach(([id]) => {
+            document.getElementById(id).innerHTML = '<div class="empty-state">Charts unavailable; live telemetry and governance controls remain active.</div>';
+        });
+        return;
+    }
     defs.forEach(([id, hc, ac]) => {
         const traces = makeTraces(hc, ac);
         Plotly.newPlot(id, traces, { ...chartLayout }, chartConfig);
@@ -837,6 +1030,7 @@ let lastChartUpdate = 0;
 const CHART_UPDATE_INTERVAL = 200; // ms — max 5 chart updates per second
 
 function updateCharts() {
+    if (typeof window.Plotly === 'undefined') return;
     const now = performance.now();
     // In manual mode, always update immediately
     if (!manualMode && now - lastChartUpdate < CHART_UPDATE_INTERVAL) return;

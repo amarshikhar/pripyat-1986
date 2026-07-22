@@ -25,7 +25,7 @@
     </div>
 
     <!-- Controls -->
-    <div class="controls">
+    <div class="controls" id="operationControls">
         <button class="btn play-btn" id="playBtn" onclick="togglePlay()">PLAY</button>
         <button class="btn stop-btn" id="stopBtn" onclick="stopSim()">STOP</button>
         <button class="btn" id="resetBtn" onclick="resetSim()">RESET</button>
@@ -46,12 +46,20 @@
         </div>
 
         <div class="control-group">
-            <button class="btn manual-btn" id="manualBtn" onclick="toggleManualMode()">MANUAL</button>
+            <button class="btn manual-btn" id="manualBtn" onclick="switchWorkspace(manualMode ? 'simulation' : 'manual')">MANUAL</button>
         </div>
     </div>
 
+    <nav class="workspace-nav" aria-label="Control room workspaces">
+        <button class="workspace-tab active" data-workspace="simulation" onclick="switchWorkspace('simulation')">SIMULATION</button>
+        <button class="workspace-tab" data-workspace="manual" onclick="switchWorkspace('manual')">MANUAL LAB</button>
+        <button class="workspace-tab" data-workspace="cases" onclick="switchWorkspace('cases')">TRIAGE / CASES</button>
+        <button class="workspace-tab" data-workspace="evals" onclick="switchWorkspace('evals')">EVALUATIONS</button>
+        <button class="workspace-tab" data-workspace="audit" onclick="switchWorkspace('audit')">AUDIT</button>
+    </nav>
+
     <!-- Main Content -->
-    <div class="main-grid">
+    <div class="main-grid workspace-view" id="operationsView">
         <!-- Charts Area (2 columns x 3 rows) -->
         <div class="charts-area">
             <div class="chart-panel">
@@ -251,6 +259,79 @@
             </div>
         </div>
     </div>
+
+    <section class="workspace-view data-workspace" id="casesView" hidden>
+        <div class="workspace-heading">
+            <div>
+                <h1>Supervisor triage cases</h1>
+                <p>Every major agent recommendation is inert, attributable, and backed by the exact input and trace used to create it.</p>
+            </div>
+            <div class="workspace-actions">
+                <select id="caseStatusFilter" onchange="loadCases()">
+                    <option value="">All statuses</option>
+                    <option value="pending_review">Pending review</option>
+                    <option value="approved">Approved</option>
+                    <option value="approved_with_edits">Approved with edits</option>
+                    <option value="rejected">Rejected</option>
+                </select>
+                <button class="btn" onclick="loadCases()">REFRESH</button>
+            </div>
+        </div>
+        <div class="case-workspace">
+            <div class="case-list panel" id="caseList"><div class="empty-state">Loading cases…</div></div>
+            <article class="case-detail panel" id="caseDetail">
+                <div class="empty-state">Select a case to inspect agent input, evidence, and review history.</div>
+            </article>
+        </div>
+    </section>
+
+    <section class="workspace-view data-workspace" id="evalsView" hidden>
+        <div class="workspace-heading">
+            <div>
+                <h1>Explainable policy evaluations</h1>
+                <p>A reproducible, no-LLM benchmark of authority routing and hard safety boundaries.</p>
+            </div>
+            <button class="btn" onclick="loadEvaluations()">RUN EVALUATION</button>
+        </div>
+        <div id="evalSummary" class="metric-grid"></div>
+        <div class="eval-grid">
+            <section class="panel">
+                <div class="panel-title">Confusion matrix · rows are expected, columns are predicted</div>
+                <div id="confusionMatrix"><div class="empty-state">Run the evaluation to see results.</div></div>
+            </section>
+            <section class="panel">
+                <div class="panel-title">Per-class performance</div>
+                <div id="classMetrics"></div>
+            </section>
+        </div>
+        <section class="panel eval-results-panel">
+            <div class="panel-title">Scenario explanations</div>
+            <div id="evalResults"></div>
+        </section>
+        <div class="method-note" id="evalMethod"></div>
+    </section>
+
+    <section class="workspace-view data-workspace" id="auditView" hidden>
+        <div class="workspace-heading">
+            <div>
+                <h1>Persistent audit trail</h1>
+                <p>Case creation, human decisions, deterministic trips, and agent activity remain queryable after the live tick.</p>
+            </div>
+            <div class="workspace-actions">
+                <input id="auditEntityFilter" placeholder="Case ID (optional)" onkeydown="if(event.key==='Enter') loadPersistentAudit()">
+                <button class="btn" onclick="loadPersistentAudit()">REFRESH</button>
+            </div>
+        </div>
+        <div class="panel persistent-audit-panel">
+            <div id="persistentAuditMeta" class="table-meta"></div>
+            <div class="data-table-wrap">
+                <table class="data-table">
+                    <thead><tr><th>Recorded / simulation time</th><th>Tick</th><th>Actor</th><th>Type</th><th>Entity</th><th>Status</th><th>Detail</th></tr></thead>
+                    <tbody id="persistentAuditBody"><tr><td colspan="7" class="empty-state">Loading audit events…</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+    </section>
 
     <script src="/static/app.js"></script>
 </body>

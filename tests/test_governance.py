@@ -89,12 +89,14 @@ class HumanReviewTests(unittest.IsolatedAsyncioTestCase):
         orchestrator.review_recommendation(
             recommendation.id, "approve", "Akimov", "Confirmed against procedure"
         )
+        self.assertFalse(orchestrator.store.get_case(recommendation.id)["executed"])
 
         summary = await orchestrator.process_tick(reactor_state())
         executed = [d for d in summary["decisions"] if d["action"] == "ABORT TEST"]
         self.assertEqual(len(executed), 1)
         self.assertEqual(executed[0]["source"], "human_approved")
         self.assertEqual(executed[0]["status"], "approved")
+        self.assertTrue(orchestrator.store.get_case(recommendation.id)["executed"])
 
     async def test_safety_trip_does_not_wait_for_human_review(self):
         orchestrator = Orchestrator()

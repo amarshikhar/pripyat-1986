@@ -36,6 +36,7 @@ from timeline_engine import DualTimelineEngine
 from config import SIMULATION
 from orchestrator import Orchestrator
 from physics import compute_manual_state, compute_scram_decay
+from evaluation import run_evaluation
 
 app = FastAPI(title="PRIPYAT-1986")
 
@@ -168,6 +169,36 @@ async def recommendations(scope: str = "timeline"):
     return orchestrator.pending_recommendations()
 
 
+@app.get("/api/cases")
+async def cases(status: Optional[str] = None, limit: int = 100):
+    allowed = {"pending_review", "approved", "approved_with_edits", "rejected"}
+    if status and status not in allowed:
+        raise HTTPException(422, "invalid case status")
+    return engine.orchestrator.store.list_cases(status=status, limit=limit)
+
+
+@app.get("/api/cases/{case_id}")
+async def case_detail(case_id: str):
+    case = engine.orchestrator.store.get_case(case_id)
+    if case is None:
+        raise HTTPException(404, "case not found")
+    return case
+
+
+@app.get("/api/audit")
+async def audit_events(
+    limit: int = 250, run_id: Optional[str] = None, entity_id: Optional[str] = None,
+):
+    return engine.orchestrator.store.list_audit(
+        limit=limit, run_id=run_id, entity_id=entity_id,
+    )
+
+
+@app.get("/api/evals")
+async def eval_report():
+    return await run_evaluation()
+
+
 @app.post("/api/recommendations/{recommendation_id}/decision")
 async def review_recommendation(recommendation_id: str, cmd: ReviewCommand):
     orchestrator = manual_orchestrator if cmd.scope == "manual" else engine.orchestrator
@@ -265,7 +296,9 @@ async def _process_manual_tick(cmd: ManualTickCommand):
     global manual_scram_active, manual_scram_state, manual_scram_tick
 
     if manual_orchestrator is None:
-        manual_orchestrator = Orchestrator()
+        manual_orchestrator = Orchestrator(
+            store=engine.orchestrator.store, scope="manual",
+        )
         manual_active = True
         # Initialize actuals to the first command values
         manual_actual_rods = float(cmd.control_rods)

@@ -53,9 +53,10 @@ Every AI-generated risk assessment returns structured reasoning:
 }
 ```
 
-**Dashboard exposure**: The risk score panel shows `primary_concern` on hover.
-The Agent Log shows full `reasoning` for every agent action.
-Operators can always see *why* the AI made a recommendation.
+**Dashboard exposure**: Triage / Cases preserves the exact reactor telemetry,
+component risk scores, sensor alerts, historical context, recommendation
+reasoning, authority boundary, and signed reviewer outcome. Operators can
+inspect *why* a recommendation was created before deciding it.
 
 ---
 
@@ -90,9 +91,21 @@ The `--smoke-test` flag runs 5 ticks and validates:
 |--------|-----------------|-------------|
 | LLM response latency | < 5 seconds | `llm_client.avg_latency_ms` |
 | Fallback rate | < 20% of ticks | `llm_fallback_count / total_ticks` |
-| Risk score accuracy | SCRAM triggers before explosion tick | Timeline comparison |
 | Authority integrity | 100% — no agent proposal directly executes | Unit test assertion |
 | Safety-kernel isolation | 100% — no LLM score is an input | API and unit-test assertion |
+| Protective-trip recall | 100% on frozen critical fixtures | Evaluation confusion matrix |
+| False protective-trip rate | 0% on frozen non-trip fixtures | Evaluation confusion matrix |
+| Human-review recall | 100% on frozen major-decision fixtures | Evaluation confusion matrix |
+
+The Evaluations workspace reports the full three-class confusion matrix for
+`monitor`, `human_review`, and `protective_trip`, plus each scenario’s raw
+telemetry, activated rules, recommendations, and authority route. Model calls
+are disabled so this suite is reproducible and tests the control boundary—not
+the quality of a particular model response.
+
+> This frozen fixture set is a software regression benchmark, not a nuclear
+> safety certification or evidence that the simplified physics model is valid
+> for operational use.
 
 ### Production Validation
 Before each deployment:
@@ -100,6 +113,7 @@ Before each deployment:
 2. Verify agent recommendations remain inert before approval
 3. Verify deterministic trips trigger from each raw critical condition
 4. Verify approve/reject finality and idempotency
+5. Run the confusion-matrix evaluation and investigate every off-diagonal result
 
 ---
 
@@ -148,7 +162,8 @@ reduced safety.
 | Average LLM latency | `llm_client.avg_latency_ms` | Web dashboard header |
 | Fallback events | `risk_agent.fallback_count` | Agent Log |
 | Risk score history | `risk_agent.score_history` | Risk chart |
-| Decision audit trail | `orchestrator.history[]` | Final report JSON |
+| Decision audit trail | SQLite `audit_events` | Persistent Audit workspace |
+| Detailed review cases | SQLite `cases` | Triage / Cases workspace |
 | Cost estimate | `call_count × $0.00015 per call` | Final report |
 
 ### Azure Monitor Integration (Production)

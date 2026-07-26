@@ -7,15 +7,13 @@ openai>=1.0         # LLM reasoning (works with both OpenAI and Azure OpenAI)
 fastapi>=0.104      # Web dashboard server
 uvicorn[standard]>=0.24  # ASGI server for FastAPI
 websockets>=12.0    # WebSocket support
-azure-cosmos>=4.5
-gunicorn>=21.2
-azure-monitor-opentelemetry>=1.0
+
+# Optional extras live in requirements-azure.txt so serverless bundles stay
+# small. Every import of them is lazy and guarded (Cosmos audit sink,
+# Application Insights); gunicorn is installed directly by the Dockerfile.
 
 # Azure Migration (uncomment when deploying to Azure):
 # azure-eventhub>=5.11       # Replace EventSimulator
-# azure-cosmos>=4.5          # Replace JSON state files
 # azure-ai-search>=11.4      # Knowledge base retrieval
 # azure-maps-route>=1.0      # Evacuation routing
 # semantic-kernel>=1.0        # Agent orchestration framework
-
-

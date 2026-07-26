@@ -166,6 +166,13 @@ SECURITY = {
 }
 
 # ── Output ─────────────────────────────────────────────────────────
-OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "output")
+# Serverless hosts (Vercel, Lambda) mount the deployment read-only and only
+# allow writes under /tmp, so the run directory has to move there. Set
+# PRIPYAT_STATE_DIR to override anywhere else.
+_EPHEMERAL_FS = bool(os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
+_STATE_ROOT = os.getenv("PRIPYAT_STATE_DIR") or (
+    "/tmp/pripyat" if _EPHEMERAL_FS else os.path.dirname(__file__)
+)
+OUTPUT_DIR = os.path.join(_STATE_ROOT, "output")
 STATE_FILE = os.path.join(OUTPUT_DIR, "agent_state.json")
 LOG_FILE = os.path.join(OUTPUT_DIR, "simulation.log")

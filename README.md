@@ -128,6 +128,43 @@ Cases and audit events are stored in `output/pripyat.db` by default. Set `PRIPYA
 
 ---
 
+## Deployment
+
+The dashboard is a stateful FastAPI app: one simulation engine, one manual-lab
+session and a SQLite case store live in the server process, and the browser
+follows along over a WebSocket. Pick a host accordingly.
+
+### Container (recommended — shared demos)
+
+```bash
+docker build -t pripyat-1986 .
+docker run -p 8000:8000 --env-file .env pripyat-1986
+```
+
+One long-running process keeps the replay ticking, the case store on disk and
+every viewer on the same state. This is the target the `infra/` blueprint
+describes (Azure Container Apps / AKS), and it works the same on Render, Fly or
+any container host.
+
+### Vercel (single-viewer demo)
+
+The repository ships a Vercel entrypoint (`api/index.py` + `vercel.json`).
+Import the repo at **vercel.com → Add New → Project**; the Python runtime and
+the `/(.*) → /api/index` rewrite are picked up from `vercel.json`, so no build
+settings are needed. Add `OPENAI_API_KEY` (and `OPENAI_BASE_URL` /
+`OPENAI_MODEL`) as environment variables to enable the LLM agents.
+
+Serverless trade-offs to know before demoing on it:
+
+- **Single viewer.** Engine and lab state live in one function instance;
+  concurrent instances do not share it.
+- **Cold starts reset the run.** The case/audit database is written under
+  `/tmp` and is discarded with the instance.
+- **The WebSocket reconnects** when a function hits `maxDuration` (300 s here).
+  The client reconnects automatically, but the replay pauses at that point.
+
+---
+
 ## Architecture
 
 ```

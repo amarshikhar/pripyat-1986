@@ -1,0 +1,10 @@
+# Optional Azure integrations for PRIPYAT-1986.
+#   pip install -r requirements.txt -r requirements-azure.txt
+#
+# Both are imported lazily and only activate when their environment variable
+# is set, so the app runs without them:
+#   COSMOS_CONNECTION_STRING              → cosmos_logger decision sink
+#   APPLICATIONINSIGHTS_CONNECTION_STRING → llm_client telemetry
+
+azure-cosmos>=4.5
+azure-monitor-opentelemetry>=1.0

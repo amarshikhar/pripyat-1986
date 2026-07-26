@@ -1212,6 +1212,16 @@ body {
     overflow: hidden;
 }
 
+.actual-val {
+    font-weight: 700;
+    color: var(--orange);
+    font-size: 10px;
+    min-width: 70px;
+    max-width: 70px;
+    text-align: right;
+    white-space: nowrap;
+    overflow: hidden;
+}
 .manual-derived {
     margin-top: 10px;
     padding-top: 8px;

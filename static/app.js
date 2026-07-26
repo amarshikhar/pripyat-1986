@@ -319,15 +319,51 @@ function toggleManualMode(resumeTimeline = true, resetSession = true) {
         document.getElementById('resetBtn').disabled = true;
         document.getElementById('scrubber').disabled = true;
         document.getElementById('speedSlider').disabled = true;
-        // Clear chart data for fresh manual graphs
-        chartData.timestamps = [];
-        Object.keys(chartData.historical).forEach(k => chartData.historical[k] = []);
-        Object.keys(chartData.intervened).forEach(k => chartData.intervened[k] = []);
-        pendingPoints.timestamps = [];
-        Object.keys(pendingPoints.historical).forEach(k => pendingPoints.historical[k] = []);
-        Object.keys(pendingPoints.intervened).forEach(k => pendingPoints.intervened[k] = []);
-        initCharts();
+        // Bug 4: Add a boundary annotation to existing charts instead of wiping data
+        const boundaryTick = chartData.timestamps.length > 0 ? chartData.timestamps[chartData.timestamps.length - 1] : 0;
+        if (typeof window.Plotly !== 'undefined' && boundaryTick > 0) {
+            const chartIds = ['chartPower', 'chartRods', 'chartCoolant', 'chartSteam', 'chartTemp', 'chartRadiation'];
+            chartIds.forEach(id => {
+                Plotly.relayout(id, {
+                    shapes: [{
+                        type: 'line', x0: boundaryTick, x1: boundaryTick,
+                        y0: 0, y1: 1, yref: 'paper',
+                        line: { color: '#ff6b35', width: 2, dash: 'dash' },
+                    }],
+                    annotations: [{
+                        x: boundaryTick, y: 1, yref: 'paper',
+                        text: 'MANUAL START', showarrow: false,
+                        font: { color: '#ff6b35', size: 9 },
+                        xanchor: 'left', yanchor: 'bottom',
+                    }],
+                });
+            });
+        } else {
+            // No prior data — fresh start, clear and init
+            chartData.timestamps = [];
+            Object.keys(chartData.historical).forEach(k => chartData.historical[k] = []);
+            Object.keys(chartData.intervened).forEach(k => chartData.intervened[k] = []);
+            pendingPoints.timestamps = [];
+            Object.keys(pendingPoints.historical).forEach(k => pendingPoints.historical[k] = []);
+            Object.keys(pendingPoints.intervened).forEach(k => pendingPoints.intervened[k] = []);
+            initCharts();
+        }
         manualTickCounter = 0;
+        // Bug 7: Reset sliders to safe defaults
+        document.getElementById('rodsSlider').value = 100;
+        document.getElementById('coolantSlider').value = 8000;
+        document.getElementById('rodsVal').textContent = '100';
+        document.getElementById('coolantVal').textContent = '8000';
+        document.getElementById('rodsActual').textContent = '100';
+        document.getElementById('coolantActual').textContent = '8000';
+        manualEccsActive = true;
+        document.getElementById('eccsToggle').classList.add('on');
+        document.getElementById('eccsVal').textContent = 'ON';
+        // Reset derived displays
+        document.getElementById('derivedPower').textContent = '—';
+        document.getElementById('derivedTemp').textContent = '—';
+        document.getElementById('derivedSteam').textContent = '—';
+        document.getElementById('derivedRad').textContent = '—';
         // Clear agent log for manual session
         logEntryCount = 0;
         document.getElementById('agentLog').innerHTML = '<div class="empty-state">Starting manual control...</div>';
@@ -370,7 +406,7 @@ function toggleECCS() {
 }
 
 function onManualSliderChange() {
-    // Update display values only — continuous interval handles the tick sending
+    // Update TARGET display values — continuous interval handles tick sending
     const rods = parseInt(document.getElementById('rodsSlider').value);
     const coolant = parseInt(document.getElementById('coolantSlider').value);
     document.getElementById('rodsVal').textContent = rods;
@@ -404,10 +440,10 @@ async function sendManualTick(controlRods, coolantFlow, eccsActive) {
         }
         // Show actual ramped values (where the reactor REALLY is vs target)
         if (data.actual_rods !== undefined) {
-            document.getElementById('rodsVal').textContent = Math.round(data.actual_rods);
+            document.getElementById('rodsActual').textContent = Math.round(data.actual_rods);
         }
         if (data.actual_coolant !== undefined) {
-            document.getElementById('coolantVal').textContent = Math.round(data.actual_coolant);
+            document.getElementById('coolantActual').textContent = Math.round(data.actual_coolant);
         }
         // All other UI updates (risk, charts, LLM, Dyatlov, agent log)
         // are handled by the WebSocket broadcast from the server
@@ -909,9 +945,9 @@ function updateDyatlov(data) {
     chatLog.appendChild(entry);
     chatLog.scrollTop = chatLog.scrollHeight;
 
-    // Keep log manageable (max 30 entries)
+    // Keep log manageable (max 30 entries) — trim OLDEST (first child)
     while (chatLog.children.length > 30) {
-        chatLog.removeChild(chatLog.lastChild);
+        chatLog.removeChild(chatLog.firstChild);
     }
 }
 

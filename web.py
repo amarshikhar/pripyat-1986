@@ -35,7 +35,7 @@ from typing import Literal, Optional
 from timeline_engine import DualTimelineEngine
 from config import SIMULATION
 from orchestrator import Orchestrator
-from physics import compute_manual_state, compute_scram_decay
+from physics import compute_manual_state, compute_scram_decay, TOTAL_RODS, NOMINAL_COOLANT_FLOW
 from evaluation import run_evaluation
 
 app = FastAPI(title="PRIPYAT-1986")
@@ -242,6 +242,29 @@ async def control(cmd: ControlCommand):
         engine.set_speed(speed)
     elif cmd.action == "toggle_intervention":
         engine.intervention_enabled = not engine.intervention_enabled
+
+
+@app.post("/api/control")
+async def control(cmd: ControlCommand):
+    """Handle simulation control commands."""
+    if cmd.action == "play":
+        start_simulation()
+    elif cmd.action == "pause":
+        await stop_simulation()
+    elif cmd.action == "reset":
+        await stop_simulation()
+        engine.reset()
+    elif cmd.action == "step":
+        if not sim_state["playing"]:
+            tick_data = await engine.process_tick()
+            if tick_data:
+                await broadcast(tick_data)
+    elif cmd.action == "set_speed":
+        speed = max(1, min(2500, int(cmd.value or 60)))
+        sim_state["speed"] = speed
+        engine.set_speed(speed)
+    elif cmd.action == "toggle_intervention":
+        engine.intervention_enabled = not engine.intervention_enabled
     elif cmd.action == "seek":
         if not sim_state["playing"] and cmd.value is not None:
             await stop_simulation()
@@ -300,49 +323,36 @@ async def _process_manual_tick(cmd: ManualTickCommand):
             store=engine.orchestrator.store, scope="manual",
         )
         manual_active = True
-        # Initialize actuals to the first command values
         manual_actual_rods = float(cmd.control_rods)
         manual_actual_coolant = float(cmd.coolant_flow)
 
-    # If SCRAM is active, compute decay physics (ignores sliders)
     if manual_scram_active and manual_scram_state:
         ticks_since_scram = manual_orchestrator.tick_count - manual_scram_tick + 1
-        elapsed_s = ticks_since_scram * 1.5  # 1.5s per tick
+        elapsed_s = ticks_since_scram * 1.5
         state = compute_scram_decay(manual_scram_state, elapsed_s)
-        # Keep manual tag so agent pipeline doesn't trigger LLM every tick
         state.tags = ["manual", "scram"]
         state.event_description = None
         state.actual_human_decision = None
     else:
-        # Ramp actual values toward target (simulates mechanical inertia)
         target_rods = float(cmd.control_rods)
         target_coolant = float(cmd.coolant_flow)
-
-        # Rods ramp
         if manual_actual_rods < target_rods:
             manual_actual_rods = min(target_rods, manual_actual_rods + RODS_RAMP_RATE)
         elif manual_actual_rods > target_rods:
             manual_actual_rods = max(target_rods, manual_actual_rods - RODS_RAMP_RATE)
-
-        # Coolant ramp
         if manual_actual_coolant < target_coolant:
             manual_actual_coolant = min(target_coolant, manual_actual_coolant + COOLANT_RAMP_RATE)
         elif manual_actual_coolant > target_coolant:
             manual_actual_coolant = max(target_coolant, manual_actual_coolant - COOLANT_RAMP_RATE)
-
-        # Compute physics from ACTUAL (ramped) values, not raw slider targets
         state = compute_manual_state(round(manual_actual_rods), manual_actual_coolant, cmd.eccs_active)
 
-    # Run full agent pipeline on the computed state
     tick_summary = await manual_orchestrator.process_tick(state)
 
-    # Detect SCRAM trigger — lock in the state for decay computation
     if not manual_scram_active and manual_orchestrator.reactor_scrammed:
         manual_scram_active = True
         manual_scram_state = state
         manual_scram_tick = manual_orchestrator.tick_count
 
-    # In manual mode, always provide an AI assessment entry so user sees feedback
     decisions = tick_summary["decisions"]
     if not decisions:
         risk_score = tick_summary["risk_score"]
@@ -363,7 +373,14 @@ async def _process_manual_tick(cmd: ManualTickCommand):
             "source": tick_summary.get("risk_source", "rule"),
         }]
 
-    # Build broadcast payload matching the timeline tick format
+    baseline = compute_manual_state(TOTAL_RODS, NOMINAL_COOLANT_FLOW, True)
+
+    risk_score = tick_summary["risk_score"]
+    is_diverged = risk_score >= 30 or bool(decisions and any(
+        d.get("action", "").startswith("AZ-5") or d.get("action", "").startswith("ABORT")
+        for d in decisions
+    ))
+
     tick_data = {
         "type": "tick",
         "data": {
@@ -379,14 +396,14 @@ async def _process_manual_tick(cmd: ManualTickCommand):
                 "radiation": state.radiation_mrem_h,
             },
             "intervened": {
-                "power_mw": state.power_mw,
-                "control_rods": state.control_rods_inserted,
-                "coolant_flow": state.coolant_flow_m3h,
-                "steam_pressure": state.steam_pressure_mpa,
-                "temperature_c": state.temperature_c,
-                "radiation": state.radiation_mrem_h,
+                "power_mw": baseline.power_mw,
+                "control_rods": baseline.control_rods_inserted,
+                "coolant_flow": baseline.coolant_flow_m3h,
+                "steam_pressure": baseline.steam_pressure_mpa,
+                "temperature_c": baseline.temperature_c,
+                "radiation": baseline.radiation_mrem_h,
             },
-            "risk_score": tick_summary["risk_score"],
+            "risk_score": risk_score,
             "alert_level": tick_summary["alert_level"],
             "decisions": decisions,
             "recommendations": tick_summary.get("recommendations", []),
@@ -399,10 +416,7 @@ async def _process_manual_tick(cmd: ManualTickCommand):
             "counterfactual": None,
             "state": {
                 **tick_summary["state"],
-                "diverged": bool(decisions and any(
-                    d.get("action", "").startswith("AZ-5") or d.get("action", "").startswith("ABORT")
-                    for d in decisions
-                )),
+                "diverged": is_diverged,
             },
             "source": "manual",
         },
@@ -425,8 +439,6 @@ async def _process_manual_tick(cmd: ManualTickCommand):
         "decisions": decisions,
         "pending_recommendations": tick_summary.get("pending_recommendations", []),
     }
-
-
 @app.post("/api/manual_reset")
 async def manual_reset():
     """Reset the manual mode orchestrator."""

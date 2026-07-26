@@ -97,13 +97,15 @@
                     <label>Control Rods</label>
                     <input type="range" id="rodsSlider" min="0" max="211" value="100"
                            oninput="onManualSliderChange()">
-                    <span class="manual-val" id="rodsVal">100</span>
+                    <span class="manual-val">Target: <span id="rodsVal">100</span></span>
+                    <span class="actual-val">Actual: <span id="rodsActual">100</span></span>
                 </div>
                 <div class="manual-control">
                     <label>Coolant Flow</label>
                     <input type="range" id="coolantSlider" min="0" max="8000" step="100" value="8000"
                            oninput="onManualSliderChange()">
-                    <span class="manual-val" id="coolantVal">8000</span>
+                    <span class="manual-val">Target: <span id="coolantVal">8000</span></span>
+                    <span class="actual-val">Actual: <span id="coolantActual">8000</span></span>
                 </div>
                 <div class="manual-control">
                     <label>ECCS</label>

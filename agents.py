@@ -603,7 +603,8 @@ class RecommendationAgent:
         return len(self.decisions) - self._last_llm_tick if self._last_llm_tick >= 0 else 999
 
     def _rule_based_recommendations(self, state: ReactorState, risk_score: int,
-                            sensor_alerts: list[AgentMessage] = None) -> list[AgentAction]:
+                            sensor_alerts: list[AgentMessage] = None,
+                            commanded_state: Optional[ReactorState] = None) -> list[AgentAction]:
         """Deterministic recommendation rules; outputs remain inert."""
         actions = []
         counterfactual = AI_COUNTERFACTUAL_DECISIONS.get(state.timestamp)
@@ -651,24 +652,35 @@ class RecommendationAgent:
                     },
                 ))
 
-        # PROPOSAL RULE 2b: manual lab early triage.
-        # In the manual control room the operator drives the plant directly, so
-        # the agent watches the *warning* band (which sits below every
-        # SafetyKernel hard-trip limit) and asks the supervisor to decide while
-        # there is still a decision to make. Timeline replay is unaffected.
-        is_manual = bool(state.tags and "manual" in state.tags)
+        # PROPOSAL RULE 2b: warning-band triage.
+        # The agent watches the warning band, which sits below every SafetyKernel
+        # hard-trip limit, and asks the supervisor to decide while there is still
+        # a decision to make. In the manual lab it also reads the *commanded*
+        # lever positions, so the case opens while the reactor is still ramping
+        # toward them rather than after the kernel has already tripped.
         already_proposing_scram = any(
             a.action == "AZ-5 EMERGENCY SHUTDOWN (SCRAM)" for a in actions
         )
-        if is_manual and not self.reactor_scrammed and not already_proposing_scram:
+        if not self.reactor_scrammed and not already_proposing_scram:
             crossings, escalate = self._threshold_crossings(state, risk_score)
+            if commanded_state is not None:
+                commanded_crossings, commanded_escalate = self._threshold_crossings(
+                    commanded_state, risk_score,
+                )
+                new_crossings = [c for c in commanded_crossings if c not in crossings]
+                if new_crossings:
+                    crossings = crossings + [
+                        f"operator has commanded a configuration that reaches: "
+                        + "; ".join(new_crossings)
+                    ]
+                escalate = escalate or commanded_escalate
             if escalate:
                 actions.append(AgentAction(
                     agent=self.name,
                     timestamp=state.timestamp,
                     action="AZ-5 EMERGENCY SHUTDOWN (SCRAM)",
                     reasoning=(
-                        "Operator inputs pushed the core past its safe operating envelope: "
+                        "Plant is outside its safe operating envelope: "
                         + "; ".join(crossings)
                         + f". Risk {risk_score}/100. Recommending AZ-5 before the deterministic "
                           "safety kernel is forced to trip. No action is taken until a supervisor "
@@ -677,7 +689,7 @@ class RecommendationAgent:
                     alert_level=AlertLevel.CRITICAL,
                     metadata={
                         "risk_score": risk_score,
-                        "trigger": "manual_threshold_crossing",
+                        "trigger": "threshold_crossing",
                         "threshold_crossings": crossings,
                         "review_authority": "human_supervisor",
                         "source": "rule",
@@ -745,13 +757,18 @@ class RecommendationAgent:
         if state.radiation_mrem_h >= t["radiation_mrem_h"]["elevated"]:
             crossings.append(f"radiation elevated at {state.radiation_mrem_h:.2f} mrem/h")
             proximate |= state.radiation_mrem_h >= t["radiation_mrem_h"]["dangerous"]
-        if state.power_mw <= t["power_mw"]["danger_low"] and state.power_mw > 0:
+        if 0 < state.power_mw <= t["power_mw"]["danger_low"]:
+            # The 1986 accident turned here: a power collapse into the xenon
+            # band is recoverable only by shutting down, and the deterministic
+            # kernel will not trip until power reaches critical_low with the
+            # ECCS already gone. This is the last point a human can still choose.
             crossings.append(
                 f"power {state.power_mw:.0f} MW inside the xenon-poisoning band "
                 f"(below {t['power_mw']['danger_low']} MW)"
             )
-        if not state.eccs_active and state.power_mw > t["power_mw"]["danger_low"]:
-            # The last cooling barrier is gone while the core is producing heat.
+            proximate = True
+        if not state.eccs_active:
+            # The last cooling barrier is gone while the core is still fuelled.
             crossings.append(f"ECCS disabled while the core is at {state.power_mw:.0f} MW")
             proximate = True
         if risk_score >= RISK_CONFIG["warning_threshold"]:
@@ -854,13 +871,20 @@ class RecommendationAgent:
         return actions
 
     async def process(
-        self, state: ReactorState, risk_score: int, sensor_alerts: list[AgentMessage]
+        self, state: ReactorState, risk_score: int, sensor_alerts: list[AgentMessage],
+        commanded_state: Optional[ReactorState] = None,
     ) -> list[AgentAction]:
         """
         Draft recommendations. This method never changes plant state.
+
+        ``commanded_state`` is where the operator's levers are pointing, which
+        the plant is still ramping toward. Reading it lets the agent open a case
+        early enough for a human to actually answer it.
         """
         # Step 1: deterministic proposal rules (still no actuator authority)
-        rule_proposals = self._rule_based_recommendations(state, risk_score, sensor_alerts)
+        rule_proposals = self._rule_based_recommendations(
+            state, risk_score, sensor_alerts, commanded_state,
+        )
 
         # Step 2: AI recommendation at decision points
         llm_actions = []

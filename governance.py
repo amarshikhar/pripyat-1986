@@ -17,7 +17,12 @@ from config import THRESHOLDS
 from timeline_data import ReactorState
 
 
-ReviewStatus = Literal["pending_review", "approved", "approved_with_edits", "rejected"]
+ReviewStatus = Literal[
+    "pending_review", "approved", "approved_with_edits", "rejected",
+    # The plant moved on before a human answered (e.g. the deterministic
+    # kernel already tripped the reactor this case proposed shutting down).
+    "superseded",
+]
 
 
 @dataclass
@@ -35,6 +40,7 @@ class Recommendation:
         return {
             "id": self.id,
             "status": self.status,
+            "agent": self.action.metadata.get("origin_agent", self.action.agent),
             "action": self.action.action,
             "reasoning": self.action.reasoning,
             "level": self.action.alert_level.value,

@@ -100,7 +100,7 @@ function handleTick(data) {
 
     // Pipeline animation. Recommendation payloads carry no agent field, so a
     // pending case is what marks the decision stage as active.
-    animatePipeline([...(data.decisions || []), ...(data.recommendations || [])], pending.length > 0);
+    animatePipeline([...(data.decisions || []), ...pending], pending.length > 0);
 
     // LLM status
     if (data.llm_stats) updateLLMStatus(data.llm_stats);
@@ -561,11 +561,14 @@ function animatePipeline(decisions, hasPendingCase = false) {
     pipelineActivated.pipeR = true;
     if (hasPendingCase) pipelineActivated.pipeD = true;
 
-    // Once an agent acts, it stays activated permanently
+    // Once an agent acts, it stays activated permanently. An approved action is
+    // re-attributed to the supervisor who signed it, so fall back to the agent
+    // that drafted it to keep the pipeline honest.
     decisions.forEach(d => {
-        if (d.agent === 'DecisionAgent' || d.agent === 'RecommendationAgent' || d.agent === 'HumanSupervisor') pipelineActivated.pipeD = true;
-        if (d.agent === 'EvacuationAgent') pipelineActivated.pipeE = true;
-        if (d.agent === 'CommsAgent') pipelineActivated.pipeC = true;
+        const agent = d.origin_agent || d.agent;
+        if (agent === 'DecisionAgent' || agent === 'RecommendationAgent' || agent === 'HumanSupervisor') pipelineActivated.pipeD = true;
+        if (agent === 'EvacuationAgent') pipelineActivated.pipeE = true;
+        if (agent === 'CommsAgent') pipelineActivated.pipeC = true;
     });
 
     // Apply persistent classes
@@ -606,7 +609,7 @@ function renderRecommendations(recommendations) {
     section.style.display = 'block';
     content.innerHTML = recommendations.map(rec => `
         <div class="review-card" data-id="${rec.id}">
-            <div class="review-id">${escapeHtml(rec.id)} · ${escapeHtml(rec.level)}</div>
+            <div class="review-id">${escapeHtml(rec.agent || 'Agent')} · ${escapeHtml(rec.id)} · ${escapeHtml(rec.level)}</div>
             <div class="review-action">${escapeHtml(rec.action)}</div>
             <div class="review-reasoning">${escapeHtml(rec.reasoning)}</div>
             <input class="review-input" id="reviewer-${rec.id}" value="Shift Supervisor" aria-label="Reviewer name">

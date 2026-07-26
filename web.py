@@ -192,7 +192,7 @@ async def recommendations(scope: str = "timeline"):
 
 @app.get("/api/cases")
 async def cases(status: Optional[str] = None, limit: int = 100):
-    allowed = {"pending_review", "approved", "approved_with_edits", "rejected"}
+    allowed = {"pending_review", "approved", "approved_with_edits", "rejected", "superseded"}
     if status and status not in allowed:
         raise HTTPException(422, "invalid case status")
     return engine.orchestrator.store.list_cases(status=status, limit=limit)
@@ -378,6 +378,7 @@ async def _process_manual_tick(cmd: ManualTickCommand):
         manual_actual_rods = float(cmd.control_rods)
         manual_actual_coolant = float(cmd.coolant_flow)
 
+    commanded_state = None
     if manual_scram_active and manual_scram_state:
         ticks_since_scram = manual_orchestrator.tick_count - manual_scram_tick + 1
         elapsed_s = ticks_since_scram * MANUAL_TICK_SECONDS
@@ -397,8 +398,14 @@ async def _process_manual_tick(cmd: ManualTickCommand):
         elif manual_actual_coolant > target_coolant:
             manual_actual_coolant = max(target_coolant, manual_actual_coolant - COOLANT_RAMP_RATE)
         state = compute_manual_state(round(manual_actual_rods), manual_actual_coolant, cmd.eccs_active)
+        # Where the levers are pointing. The reactor is still ramping toward it,
+        # which is exactly the window in which a supervisor can still answer a
+        # case — so the agent gets to see it too.
+        commanded_state = compute_manual_state(
+            int(target_rods), target_coolant, cmd.eccs_active,
+        )
 
-    tick_summary = await manual_orchestrator.process_tick(state)
+    tick_summary = await manual_orchestrator.process_tick(state, commanded_state)
 
     if not manual_scram_active and manual_orchestrator.reactor_scrammed:
         manual_scram_active = True

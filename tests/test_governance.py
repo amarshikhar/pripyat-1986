@@ -110,7 +110,44 @@ class HumanReviewTests(unittest.IsolatedAsyncioTestCase):
         trips = [d for d in summary["decisions"] if d["source"] == "safety_kernel"]
         self.assertEqual(len(trips), 1)
         self.assertTrue(summary["state"]["reactor_scrammed"])
-        self.assertEqual(summary["pending_recommendations"], [])
+        # The trip executed inside the same tick that detected it. Cases the
+        # trip goes on to generate (emergency communications) queue for review
+        # behind it — none of them is the trip itself.
+        self.assertTrue(trips[0]["status"], "executed")
+        pending_actions = {r["action"] for r in summary["pending_recommendations"]}
+        self.assertNotIn("AZ-5 EMERGENCY SHUTDOWN (SCRAM)", pending_actions)
+
+    async def test_outward_communications_require_a_signed_decision(self):
+        orchestrator = Orchestrator()
+        summary = await orchestrator.process_tick(
+            reactor_state(
+                power_mw=30, control_rods_inserted=70, eccs_active=False,
+                tags=["manual"],
+            )
+        )
+
+        broadcasts = [
+            r for r in summary["pending_recommendations"]
+            if "BROADCAST" in r["action"] or "ALERT" in r["action"]
+        ]
+        self.assertTrue(broadcasts, "comms drafts must reach the review queue")
+        self.assertTrue(all(not b["executed"] for b in broadcasts))
+        self.assertFalse(
+            [d for d in summary["decisions"] if "BROADCAST" in d["action"]],
+            "nothing is broadcast before a human signs it",
+        )
+
+        orchestrator.review_recommendation(
+            broadcasts[0]["id"], "approve", "Akimov", "Report is accurate",
+        )
+        follow_up = await orchestrator.process_tick(
+            reactor_state(power_mw=30, control_rods_inserted=211, eccs_active=True,
+                          tags=["manual", "scram"])
+        )
+        sent = [d for d in follow_up["decisions"] if d["action"] == broadcasts[0]["action"]]
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["source"], "human_approved")
+        self.assertEqual(sent[0]["origin_agent"], "CommsAgent")
 
 
 if __name__ == "__main__":

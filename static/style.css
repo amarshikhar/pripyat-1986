@@ -1447,3 +1447,9 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-secondar
     border-color: var(--cyan);
     color: var(--cyan);
 }
+
+.status-chip.superseded {
+    background: rgba(122, 138, 158, 0.15);
+    color: var(--text-muted);
+    border-color: var(--text-muted);
+}

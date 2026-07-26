@@ -71,6 +71,10 @@ class Orchestrator:
     #: Ticks a rejected recommendation stays suppressed before the agent may
     #: raise the same action again.
     REPROPOSE_COOLDOWN_TICKS = 12
+    #: How many times the agent may re-raise an action a human already declined.
+    #: Past this the supervisor's answer stands and the agent keeps monitoring —
+    #: an assistant that asks forever is just an alarm nobody reads.
+    MAX_REPROPOSALS = 2
 
     def __init__(self, store: Optional[CaseAuditStore] = None, scope: str = "timeline"):
         self.bus = MessageBus()
@@ -107,6 +111,10 @@ class Orchestrator:
         # on the very next tick — that would spam the supervisor with a case the
         # supervisor just declined.
         self._rejected_at_tick: dict[str, int] = {}
+        self._rejected_count: dict[str, int] = {}
+        #: Reviewer whose approval authorized the evacuation, for attribution
+        #: on the logistics the EvacuationAgent then executes.
+        self._evacuation_reviewer: Optional[str] = None
 
         # Dyatlov is an adversarial-pressure signal, never a control path.
         self.override_history: list[dict] = []
@@ -126,6 +134,8 @@ class Orchestrator:
                 continue
             rejected_tick = self._rejected_at_tick.get(proposal.action)
             if rejected_tick is not None:
+                if self._rejected_count.get(proposal.action, 0) > self.MAX_REPROPOSALS:
+                    continue  # the supervisor's answer stands
                 if self.tick_count - rejected_tick < self.REPROPOSE_COOLDOWN_TICKS:
                     continue
                 # Cooldown elapsed and the hazard is still present — re-open the case.
@@ -159,11 +169,11 @@ class Orchestrator:
             self.store.create_case(case_record)
             self.store.add_audit_event(
                 self.run_id, proposal.timestamp, self.tick_count,
-                "RecommendationAgent", "case_created", "case", recommendation.id,
+                proposal.agent, "case_created", "case", recommendation.id,
                 "pending_review", {"action": proposal.action, "level": proposal.alert_level.value},
             )
             self.audit.log(
-                agent="RecommendationAgent", log_type="RECOMMENDATION_CREATED",
+                agent=proposal.agent, log_type="RECOMMENDATION_CREATED",
                 direction="OUTPUT", detail=f"{recommendation.id}: {proposal.action}",
                 source=proposal.metadata.get("source", "rule"), status="pending_review",
                 data=recommendation.as_dict(),
@@ -237,7 +247,12 @@ class Orchestrator:
                 "source": "human_approved",
                 "reviewer": recommendation.reviewer,
                 "recommendation_id": recommendation.id,
+                # Keep the drafting agent so the pipeline view stays truthful
+                # about which agent produced the action a human then signed.
+                "origin_agent": proposal.metadata.get("origin_agent", proposal.agent),
             })
+            if "EVACUATION" in final_action:
+                self._evacuation_reviewer = f"human:{recommendation.reviewer}"
             proposal.agent = "HumanSupervisor"
             self._reviewed_actions.append(proposal)
         else:
@@ -247,6 +262,15 @@ class Orchestrator:
                 if rec_id == recommendation.id:
                     self._recommendation_by_action.pop(action_name, None)
                     self._rejected_at_tick[action_name] = self.tick_count
+                    count = self._rejected_count.get(action_name, 0) + 1
+                    self._rejected_count[action_name] = count
+                    if count > self.MAX_REPROPOSALS:
+                        self.audit.log(
+                            agent="RecommendationAgent", log_type="RECOMMENDATION_CLOSED",
+                            direction="OUTPUT",
+                            detail=f"'{action_name}' declined {count}x — no longer re-raised; monitoring continues",
+                            source="rule", status="rejected",
+                        )
 
         self.audit.log(
             agent=f"human:{recommendation.reviewer}", log_type="RECOMMENDATION_REVIEWED",
@@ -265,10 +289,53 @@ class Orchestrator:
         )
         return recommendation.as_dict()
     
-    async def process_tick(self, state: ReactorState) -> dict:
+    def _supersede_pending(self, keyword: str, reason: str) -> None:
+        """Close pending cases the plant has already overtaken.
+
+        Asking a supervisor to approve a shutdown that a deterministic trip has
+        already carried out is not a real decision, and leaving the card on
+        screen implies an authority the case no longer has.
+        """
+        for recommendation in self.recommendations.values():
+            if recommendation.status != "pending_review":
+                continue
+            if keyword not in recommendation.action.action:
+                continue
+            recommendation.status = "superseded"
+            recommendation.note = reason
+            recommendation.reviewed_at = datetime.now(timezone.utc).isoformat()
+            self._recommendation_by_action.pop(recommendation.action.action, None)
+            try:
+                self.store.update_case_review(recommendation.id, {
+                    "status": "superseded",
+                    "action": recommendation.action.action,
+                    "reviewer": "system",
+                    "note": reason,
+                    "reviewed_at": recommendation.reviewed_at,
+                    "executed": False,
+                })
+            except RuntimeError:
+                pass  # already decided elsewhere; the stored decision wins
+            self.store.add_audit_event(
+                self.run_id, recommendation.action.timestamp, self.tick_count,
+                "Orchestrator", "case_superseded", "case", recommendation.id,
+                "superseded", {"reason": reason},
+            )
+            self.audit.log(
+                agent="Orchestrator", log_type="RECOMMENDATION_SUPERSEDED",
+                direction="OUTPUT", detail=f"{recommendation.id}: {reason}",
+                source="rule", status="superseded",
+            )
+
+    async def process_tick(
+        self, state: ReactorState, commanded_state: Optional[ReactorState] = None,
+    ) -> dict:
         """
         Process one simulation tick through the full agent pipeline.
         Returns a summary dict for the dashboard.
+
+        ``commanded_state`` is the configuration the operator's controls are
+        calling for while the plant ramps toward it (manual lab only).
         """
         self.tick_count += 1
         self.bus.clear_tick()
@@ -357,12 +424,14 @@ class Orchestrator:
         )
 
         # ── Step 3: Recommendation Agent ──────────────────────────
-        proposals = await self.decision.process(state, risk_score, sensor_alerts)
+        proposals = await self.decision.process(
+            state, risk_score, sensor_alerts, commanded_state,
+        )
         if any("SCRAM" in action.action for action in reviewed_actions):
             proposals = [proposal for proposal in proposals if "SCRAM" not in proposal.action]
         if any("EVACUATION" in action.action for action in reviewed_actions):
             proposals = [proposal for proposal in proposals if "EVACUATION" not in proposal.action]
-        new_recommendations = self._register_recommendations(proposals, {
+        agent_input = {
             "reactor": asdict(state),
             "risk": {
                 "score": risk_score,
@@ -384,7 +453,10 @@ class Orchestrator:
                 "operator_action": state.actual_human_decision,
                 "counterfactual": AI_COUNTERFACTUAL_DECISIONS.get(state.timestamp),
             },
-        })
+        }
+        if commanded_state is not None:
+            agent_input["commanded_state"] = asdict(commanded_state)
+        new_recommendations = self._register_recommendations(proposals, agent_input)
         if not proposals:
             if self.reactor_scrammed or self.evacuation_ordered:
                 detail = f"Monitoring continues — prior actions in effect (risk={risk_score})"
@@ -441,6 +513,13 @@ class Orchestrator:
         if scram_executed and not self.reactor_scrammed:
             self.reactor_scrammed = True
             self.decision.reactor_scrammed = True  # suppress duplicate proposals
+            # A reactor already shutting down does not need a second trip. The
+            # kernel stands down so it cannot relabel a human-approved AZ-5 as
+            # its own; it stays independent for every reactor that is still up.
+            self.safety.reactor_scrammed = True
+            self._supersede_pending(
+                "SCRAM", "reactor already shut down — this case no longer has an effect",
+            )
             self.scram_timestamp = state.timestamp
             self.audit.log(
                 agent="Orchestrator", log_type="STATE_CHANGE", direction="DECISION",
@@ -458,6 +537,9 @@ class Orchestrator:
             )
         if evacuation_executed and not self.evacuation_ordered:
             self.evacuation_ordered = True
+            self._supersede_pending(
+                "EVACUATION", "evacuation already ordered — this case no longer has an effect",
+            )
             self.decision.evacuation_ordered = True  # suppress duplicate proposals
             self.evacuation_timestamp = state.timestamp
             # Signal RiskAgent to stop calling LLM (rules suffice post-evacuation)
@@ -469,29 +551,51 @@ class Orchestrator:
             )
 
         # ── Step 4: Evacuation Agent ──────────────────────────────
+        # Logistics for an evacuation a human already approved, so this is
+        # execution of that decision rather than a new one. The approval it
+        # inherits its authority from is recorded on the action.
         evac_action = self.evacuation.process(self.evacuation_ordered, state)
         if evac_action:
+            evac_action.metadata.update({
+                "source": "human_approved",
+                "status": "executed",
+                "executed": True,
+                "execution_authority": "approved_evacuation_order",
+                "authorized_by": self._evacuation_reviewer or "human_supervisor",
+            })
             self.bus.publish_action(evac_action)
             self.all_actions.append(evac_action)
             decisions.append(evac_action)
             self.audit.log(
                 agent="EvacuationAgent", log_type="EVACUATION", direction="DECISION",
                 detail=f"{evac_action.action}: {evac_action.reasoning[:150]}",
-                source="rule", status="ok",
-                data={"action": evac_action.action, "reasoning": evac_action.reasoning},
+                source="human_approved", status="executed",
+                data={"action": evac_action.action, "reasoning": evac_action.reasoning,
+                      "authorized_by": evac_action.metadata["authorized_by"]},
             )
 
         # ── Step 5: Comms Agent ───────────────────────────────────
-        comms_actions = self.comms.process(state, decisions)
-        for ca in comms_actions:
-            self.bus.publish_action(ca)
-            self.all_actions.append(ca)
-            decisions.append(ca)
-            self.audit.log(
-                agent="CommsAgent", log_type="COMMS", direction="OUTPUT",
-                detail=f"{ca.action}: {ca.reasoning[:150]}",
-                source="rule", status="ok",
+        # Telling Moscow, the IAEA or the public is an outward, irreversible act.
+        # It gets the same treatment as any other consequential action: drafted
+        # by the agent, inert until a named human signs it.
+        comms_proposals = self.comms.process(state, decisions)
+        for ca in comms_proposals:
+            ca.metadata.update({
+                "status": "pending_review",
+                "execution_authority": "human_supervisor",
+                "executed": False,
+                "source": ca.metadata.get("source", "rule"),
+            })
+        if comms_proposals:
+            new_recommendations.extend(
+                self._register_recommendations(comms_proposals, agent_input)
             )
+            for ca in comms_proposals:
+                self.audit.log(
+                    agent="CommsAgent", log_type="COMMS_DRAFTED", direction="OUTPUT",
+                    detail=f"{ca.action}: drafted for supervisor review",
+                    source="rule", status="pending_review",
+                )
 
         # ── Build tick summary ────────────────────────────────────
         counterfactual = AI_COUNTERFACTUAL_DECISIONS.get(state.timestamp)
@@ -523,6 +627,7 @@ class Orchestrator:
                     "source": d.metadata.get("source", "rule"),
                     "status": d.metadata.get("status", "executed"),
                     "recommendation_id": d.metadata.get("recommendation_id"),
+                    "origin_agent": d.metadata.get("origin_agent", d.agent),
                 }
                 for d in decisions
             ],
@@ -590,6 +695,8 @@ class Orchestrator:
         self._recommendation_by_action.clear()
         self._reviewed_actions.clear()
         self._rejected_at_tick.clear()
+        self._rejected_count.clear()
+        self._evacuation_reviewer = None
         self.override_history.clear()
         self.total_override_attempts = 0
         self.total_override_failures = 0

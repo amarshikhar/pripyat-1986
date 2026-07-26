@@ -7,7 +7,7 @@
 
 const state = {
     playing: false,
-    speed: 60,
+    speed: 900,
     interventionEnabled: true,
     totalTicks: 0,
     currentTick: 0,
@@ -60,20 +60,29 @@ function connect() {
 // ── Tick Handler ─────────────────────────────────────────────────
 
 function handleTick(data) {
+    // Ignore broadcasts from the mode this client is not showing (another tab
+    // can be driving the other one) — mixing them would corrupt the charts.
+    if ((data.source === 'manual') !== manualMode) return;
+
     // Update time display
     const ts = data.timestamp;
     document.getElementById('simTime').textContent = ts.replace('T', ' ');
 
-    // Progress
-    document.getElementById('progressBar').style.width = data.progress_pct + '%';
-    state.currentTick = data.tick;
+    const isManualTick = data.source === 'manual';
 
-    // Scrubber
-    const scrubber = document.getElementById('scrubber');
-    scrubber.max = state.totalTicks || 100;
-    scrubber.value = data.tick;
-    document.getElementById('scrubberTick').textContent = `Tick: ${data.tick} / ${state.totalTicks}`;
-    document.getElementById('scrubberPct').textContent = data.progress_pct.toFixed(1) + '%';
+    if (!isManualTick) {
+        // Progress + scrubber only mean something for the recorded timeline.
+        document.getElementById('progressBar').style.width = data.progress_pct + '%';
+        state.currentTick = data.tick;
+
+        const scrubber = document.getElementById('scrubber');
+        scrubber.max = state.totalTicks || 100;
+        scrubber.value = data.tick;
+        document.getElementById('scrubberTick').textContent = `Tick: ${data.tick} / ${state.totalTicks}`;
+        document.getElementById('scrubberPct').textContent = data.progress_pct.toFixed(1) + '%';
+    } else if (data.state.reactor_scrammed) {
+        setManualStatus('SCRAMMED');
+    }
 
     // Badges
     toggleBadge('scramBadge', data.state.reactor_scrammed);
@@ -81,15 +90,17 @@ function handleTick(data) {
     toggleBadge('divergedBadge', data.state.diverged);
 
     // Risk gauge
-    updateRisk(data.risk_score, data.alert_level, data.decisions, data.state.reactor_scrammed);
-    renderRecommendations(data.pending_recommendations || []);
+    const pending = data.pending_recommendations || [];
+    updateRisk(data.risk_score, data.alert_level, data.decisions, data.state.reactor_scrammed, pending.length);
+    renderRecommendations(pending);
 
     // Charts
     appendChartData(data);
     updateCharts();
 
-    // Pipeline animation
-    animatePipeline([...(data.decisions || []), ...(data.recommendations || [])]);
+    // Pipeline animation. Recommendation payloads carry no agent field, so a
+    // pending case is what marks the decision stage as active.
+    animatePipeline([...(data.decisions || []), ...(data.recommendations || [])], pending.length > 0);
 
     // LLM status
     if (data.llm_stats) updateLLMStatus(data.llm_stats);
@@ -157,6 +168,13 @@ function handleTick(data) {
 }
 
 function handleStateUpdate(data) {
+    // Timeline control state must not re-enable the replay controls while the
+    // manual lab owns the console.
+    if (manualMode) {
+        state.playing = data.playing;
+        state.totalTicks = data.total_ticks;
+        return;
+    }
     state.playing = data.playing;
     state.speed = data.speed;
     state.interventionEnabled = data.intervention_enabled;
@@ -235,11 +253,14 @@ function stopSim() {
 }
 
 function resetSim() {
-    // Clear chart data
-    chartData.timestamps = [];
-    Object.keys(chartData.historical).forEach(k => chartData.historical[k] = []);
-    Object.keys(chartData.intervened).forEach(k => chartData.intervened[k] = []);
+    // Clear chart data, including any buffered points that have not been
+    // flushed yet — they would otherwise be drawn onto the fresh charts.
+    clearChartBuffers();
     logEntryCount = 0;
+    renderRecommendations([]);
+    toggleBadge('scramBadge', false);
+    toggleBadge('evacBadge', false);
+    toggleBadge('divergedBadge', false);
     // Reset pipeline activation state
     Object.keys(pipelineActivated).forEach(k => pipelineActivated[k] = false);
     ['pipeS', 'pipeR', 'pipeD', 'pipeE', 'pipeC'].forEach(id => {
@@ -268,6 +289,7 @@ function resetSim() {
     `;
     document.getElementById('historyContent').innerHTML = '<div class="empty-state">Events will appear as the simulation progresses...</div>';
     document.getElementById('evacContent').innerHTML = '<div class="empty-state">No evacuation order yet.</div>';
+    lastScramAuthority = null;
     updateRisk(0, 'NORMAL', [], false);
     initCharts();
     resetAuditLog();
@@ -295,106 +317,133 @@ function seekTo(val) {
 // ── Manual Control Mode ──────────────────────────────────────────
 
 let manualMode = false;
-let manualDebounceTimer = null;
+let manualSessionLive = false;   // A server-side lab session exists (maybe paused)
 let manualEccsActive = true;
-let manualTickCounter = 0;
-let manualTickInterval = null;  // Continuous tick interval
-const MANUAL_TICK_RATE_MS = 1500;  // 1.5s per tick — smooth like real control room
+let manualTickTimer = null;      // Handle for the next scheduled tick
+let manualTickInFlight = false;  // Guards against overlapping requests
+const MANUAL_TICK_RATE_MS = 1000;  // Must match MANUAL_TICK_SECONDS in web.py
+const MANUAL_DEFAULTS = { rods: 100, coolant: 8000 };
 
-function toggleManualMode(resumeTimeline = true, resetSession = true) {
-    manualMode = !manualMode;
-    const btn = document.getElementById('manualBtn');
-    const panel = document.getElementById('manualPanel');
+/** Enter the manual lab, starting a fresh physics session if none is running. */
+function enterManualMode() {
+    if (manualMode) return;
+    manualMode = true;
 
-    if (manualMode) {
-        // Pause timeline
-        sendControl('pause');
-        btn.classList.add('active');
-        panel.style.display = 'block';
-        // Hide Dyatlov section in manual mode
-        document.getElementById('dyatlovSection').style.display = 'none';
-        // Disable timeline controls
-        document.getElementById('playBtn').disabled = true;
-        document.getElementById('stopBtn').disabled = true;
-        document.getElementById('resetBtn').disabled = true;
-        document.getElementById('scrubber').disabled = true;
-        document.getElementById('speedSlider').disabled = true;
-        // Bug 4: Add a boundary annotation to existing charts instead of wiping data
-        const boundaryTick = chartData.timestamps.length > 0 ? chartData.timestamps[chartData.timestamps.length - 1] : 0;
-        if (typeof window.Plotly !== 'undefined' && boundaryTick > 0) {
-            const chartIds = ['chartPower', 'chartRods', 'chartCoolant', 'chartSteam', 'chartTemp', 'chartRadiation'];
-            chartIds.forEach(id => {
-                Plotly.relayout(id, {
-                    shapes: [{
-                        type: 'line', x0: boundaryTick, x1: boundaryTick,
-                        y0: 0, y1: 1, yref: 'paper',
-                        line: { color: '#ff6b35', width: 2, dash: 'dash' },
-                    }],
-                    annotations: [{
-                        x: boundaryTick, y: 1, yref: 'paper',
-                        text: 'MANUAL START', showarrow: false,
-                        font: { color: '#ff6b35', size: 9 },
-                        xanchor: 'left', yanchor: 'bottom',
-                    }],
-                });
-            });
-        } else {
-            // No prior data — fresh start, clear and init
-            chartData.timestamps = [];
-            Object.keys(chartData.historical).forEach(k => chartData.historical[k] = []);
-            Object.keys(chartData.intervened).forEach(k => chartData.intervened[k] = []);
-            pendingPoints.timestamps = [];
-            Object.keys(pendingPoints.historical).forEach(k => pendingPoints.historical[k] = []);
-            Object.keys(pendingPoints.intervened).forEach(k => pendingPoints.intervened[k] = []);
-            initCharts();
-        }
-        manualTickCounter = 0;
-        // Bug 7: Reset sliders to safe defaults
-        document.getElementById('rodsSlider').value = 100;
-        document.getElementById('coolantSlider').value = 8000;
-        document.getElementById('rodsVal').textContent = '100';
-        document.getElementById('coolantVal').textContent = '8000';
-        document.getElementById('rodsActual').textContent = '100';
-        document.getElementById('coolantActual').textContent = '8000';
-        manualEccsActive = true;
-        document.getElementById('eccsToggle').classList.add('on');
-        document.getElementById('eccsVal').textContent = 'ON';
-        // Reset derived displays
-        document.getElementById('derivedPower').textContent = '—';
-        document.getElementById('derivedTemp').textContent = '—';
-        document.getElementById('derivedSteam').textContent = '—';
-        document.getElementById('derivedRad').textContent = '—';
-        // Clear agent log for manual session
-        logEntryCount = 0;
-        document.getElementById('agentLog').innerHTML = '<div class="empty-state">Starting manual control...</div>';
-        // Reset audit log for manual session
-        resetAuditLog();
-        // Reset LLM stats display
-        updateLLMStatus({ llm_available: true, total_calls: 0, total_failures: 0, avg_latency_ms: 0, last_call_ok: false, last_call_time: null });
-        // Start continuous tick interval (like a real control room data stream)
-        manualTickInterval = setInterval(sendManualTickFromSliders, MANUAL_TICK_RATE_MS);
-        // Send first tick immediately
-        sendManualTickFromSliders();
-    } else {
-        btn.classList.remove('active');
-        panel.style.display = 'none';
-        // Show Dyatlov section again
-        document.getElementById('dyatlovSection').style.display = '';
-        // Stop continuous ticks
-        if (manualTickInterval) {
-            clearInterval(manualTickInterval);
-            manualTickInterval = null;
-        }
-        // Re-enable timeline controls
-        document.getElementById('playBtn').disabled = false;
-        document.getElementById('stopBtn').disabled = false;
-        document.getElementById('resetBtn').disabled = false;
-        document.getElementById('scrubber').disabled = false;
-        document.getElementById('speedSlider').disabled = false;
-        // Reset manual orchestrator and resume
-        if (resetSession) fetch('/api/manual_reset', { method: 'POST' });
-        if (resumeTimeline) sendControl('play');
+    // The timeline replay and the manual lab must never tick at the same time.
+    sendControl('pause');
+    document.getElementById('manualBtn').classList.add('active');
+    document.getElementById('manualPanel').style.display = 'block';
+    setTimelineChromeVisible(false);
+
+    if (manualSessionLive) {
+        // Resuming after a detour through the case/audit views.
+        setManualStatus('LIVE');
+        scheduleManualTick(0);
+        return;
     }
+    startManualSession();
+}
+
+/** Wipe the lab back to a cold, safe reactor and start ticking. */
+async function startManualSession() {
+    manualSessionLive = true;
+    stopManualTicks();
+
+    // Charts restart empty with exactly one live trace — the manual lab has no
+    // counterfactual timeline to compare against.
+    clearChartBuffers();
+    initCharts();
+
+    resetManualControlsToDefaults();
+    logEntryCount = 0;
+    document.getElementById('agentLog').innerHTML = '<div class="empty-state">Manual control armed — move a lever.</div>';
+    resetAuditLog();
+    renderRecommendations([]);
+    lastScramAuthority = null;
+    updateRisk(0, 'NORMAL', [], false);
+    toggleBadge('scramBadge', false);
+    toggleBadge('evacBadge', false);
+    updateLLMStatus({ llm_available: true, total_calls: 0, total_failures: 0, avg_latency_ms: 0, last_call_ok: false, last_call_time: null });
+
+    // Discard any previous lab session server-side before the first tick.
+    try {
+        await fetch('/api/manual_reset', { method: 'POST' });
+    } catch (e) {
+        console.error('Manual reset failed:', e);
+    }
+    scheduleManualTick(0);
+}
+
+/** Pause the lab but keep the session so its cases stay reviewable. */
+function pauseManualMode() {
+    if (!manualMode) return;
+    manualMode = false;
+    stopManualTicks();
+    document.getElementById('manualBtn').classList.remove('active');
+    document.getElementById('manualPanel').style.display = 'none';
+    setTimelineChromeVisible(true);
+    setManualStatus('PAUSED');
+}
+
+/** Discard the lab session and hand the charts back to the replay. */
+function endManualSession() {
+    manualSessionLive = false;
+    stopManualTicks();
+    fetch('/api/manual_reset', { method: 'POST' }).catch(e => console.error('Manual reset failed:', e));
+    clearChartBuffers();
+    initCharts();
+    renderRecommendations([]);
+}
+
+/** Show/hide the parts of the dashboard that only mean something in replay. */
+function setTimelineChromeVisible(visible) {
+    document.getElementById('dyatlovSection').style.display = visible ? '' : 'none';
+    document.querySelector('.history-panel').style.display = visible ? '' : 'none';
+    document.querySelector('.counterfactual-panel').style.display = visible ? '' : 'none';
+    document.querySelector('.scrubber-container').style.display = visible ? '' : 'none';
+    document.getElementById('divergedBadge').style.display = visible ? '' : 'none';
+    ['playBtn', 'stopBtn', 'resetBtn', 'scrubber', 'speedSlider'].forEach(id => {
+        document.getElementById(id).disabled = !visible;
+    });
+    updateChartLegends();
+}
+
+function resetManualControlsToDefaults() {
+    document.getElementById('rodsSlider').value = MANUAL_DEFAULTS.rods;
+    document.getElementById('coolantSlider').value = MANUAL_DEFAULTS.coolant;
+    document.getElementById('rodsVal').textContent = MANUAL_DEFAULTS.rods;
+    document.getElementById('coolantVal').textContent = MANUAL_DEFAULTS.coolant;
+    document.getElementById('rodsActual').textContent = MANUAL_DEFAULTS.rods;
+    document.getElementById('coolantActual').textContent = MANUAL_DEFAULTS.coolant;
+    manualEccsActive = true;
+    document.getElementById('eccsToggle').classList.add('on');
+    document.getElementById('eccsVal').textContent = 'ON';
+    ['derivedPower', 'derivedTemp', 'derivedSteam', 'derivedRad'].forEach(id => {
+        document.getElementById(id).textContent = '—';
+    });
+    setManualStatus('LIVE');
+}
+
+/** Restart the physics session without leaving the manual workspace. */
+function resetManualLab() {
+    if (!manualMode) return;
+    startManualSession();
+}
+
+function setManualStatus(text) {
+    const badge = document.getElementById('manualBadge');
+    if (badge) badge.textContent = text;
+}
+
+function stopManualTicks() {
+    clearTimeout(manualTickTimer);
+    manualTickTimer = null;
+}
+
+function scheduleManualTick(delayMs = MANUAL_TICK_RATE_MS) {
+    stopManualTicks();
+    if (!manualMode) return;
+    manualTickTimer = setTimeout(sendManualTickFromSliders, delayMs);
 }
 
 function toggleECCS() {
@@ -402,24 +451,24 @@ function toggleECCS() {
     const toggle = document.getElementById('eccsToggle');
     toggle.classList.toggle('on', manualEccsActive);
     document.getElementById('eccsVal').textContent = manualEccsActive ? 'ON' : 'OFF';
-    // ECCS is instant (it's a switch, not a ramp) — next tick will use the new value
+    // ECCS is a switch, not a ramp — the next tick picks up the new value.
 }
 
 function onManualSliderChange() {
-    // Update TARGET display values — continuous interval handles tick sending
-    const rods = parseInt(document.getElementById('rodsSlider').value);
-    const coolant = parseInt(document.getElementById('coolantSlider').value);
-    document.getElementById('rodsVal').textContent = rods;
-    document.getElementById('coolantVal').textContent = coolant;
+    // Update the TARGET readouts. The reactor ramps toward them server-side.
+    document.getElementById('rodsVal').textContent = document.getElementById('rodsSlider').value;
+    document.getElementById('coolantVal').textContent = document.getElementById('coolantSlider').value;
 }
 
 function sendManualTickFromSliders() {
-    const rods = parseInt(document.getElementById('rodsSlider').value);
-    const coolant = parseInt(document.getElementById('coolantSlider').value);
+    const rods = parseInt(document.getElementById('rodsSlider').value, 10);
+    const coolant = parseInt(document.getElementById('coolantSlider').value, 10);
     sendManualTick(rods, coolant, manualEccsActive);
 }
 
 async function sendManualTick(controlRods, coolantFlow, eccsActive) {
+    if (manualTickInFlight) return;
+    manualTickInFlight = true;
     try {
         const resp = await fetch('/api/manual_tick', {
             method: 'POST',
@@ -430,25 +479,30 @@ async function sendManualTick(controlRods, coolantFlow, eccsActive) {
                 eccs_active: eccsActive,
             }),
         });
+        if (!resp.ok) throw new Error(`manual tick failed (${resp.status})`);
         const data = await resp.json();
-        // Update manual panel derived readouts immediately
+        // Derived readouts update from the response; every other panel is driven
+        // by the WebSocket broadcast so both views stay consistent.
         if (data.derived) {
             document.getElementById('derivedPower').textContent = data.derived.power_mw.toFixed(1);
             document.getElementById('derivedTemp').textContent = data.derived.temperature_c.toFixed(1);
             document.getElementById('derivedSteam').textContent = data.derived.steam_pressure_mpa.toFixed(2);
             document.getElementById('derivedRad').textContent = data.derived.radiation_mrem_h.toFixed(4);
         }
-        // Show actual ramped values (where the reactor REALLY is vs target)
+        // Where the reactor REALLY is, versus where the lever is pointing.
         if (data.actual_rods !== undefined) {
             document.getElementById('rodsActual').textContent = Math.round(data.actual_rods);
         }
         if (data.actual_coolant !== undefined) {
             document.getElementById('coolantActual').textContent = Math.round(data.actual_coolant);
         }
-        // All other UI updates (risk, charts, LLM, Dyatlov, agent log)
-        // are handled by the WebSocket broadcast from the server
     } catch (e) {
         console.error('Manual tick failed:', e);
+    } finally {
+        manualTickInFlight = false;
+        // Self-scheduling: one tick is only queued after the previous one lands,
+        // so a slow pipeline can never pile up requests.
+        scheduleManualTick();
     }
 }
 
@@ -458,7 +512,9 @@ function toggleBadge(id, active) {
     document.getElementById(id).classList.toggle('active', active);
 }
 
-function updateRisk(score, level, decisions, scrammed) {
+let lastScramAuthority = null;  // 'kernel' | 'human'
+
+function updateRisk(score, level, decisions, scrammed, pendingCount = 0) {
     const el = document.getElementById('riskScore');
     el.textContent = score;
     el.className = 'risk-score ' + level.toLowerCase();
@@ -477,11 +533,21 @@ function updateRisk(score, level, decisions, scrammed) {
     const decisionEl = document.getElementById('decisionMode');
     decisionEl.className = 'decision-mode ' + level;
 
-    // Only an actually executed deterministic trip is auto-execute. A high AI
-    // risk score remains a recommendation and cannot become actuator authority.
-    const hasScram = decisions && decisions.some(d => d.action && d.action.includes('SCRAM'));
-    if (scrammed || hasScram) {
-        decisionEl.textContent = '[SAFETY KERNEL TRIP ⚡]';
+    // Who actually holds authority right now. A high AI risk score stays a
+    // recommendation; only the deterministic kernel or a signed human decision
+    // can move an actuator, and the label must say which one did.
+    const scramDecision = (decisions || []).find(d => d.action && d.action.includes('SCRAM'));
+    if (scramDecision) {
+        lastScramAuthority =
+            (scramDecision.source === 'safety_kernel' || scramDecision.agent === 'SafetyKernel')
+                ? 'kernel' : 'human';
+    }
+    if (scrammed || scramDecision) {
+        decisionEl.textContent = lastScramAuthority === 'human'
+            ? '[HUMAN-APPROVED SHUTDOWN ✓]'
+            : '[SAFETY KERNEL TRIP ⚡]';
+    } else if (pendingCount > 0) {
+        decisionEl.textContent = '[AWAITING SUPERVISOR DECISION]';
     } else if (score >= 60) {
         decisionEl.textContent = '[HUMAN REVIEW REQUIRED]';
     } else {
@@ -489,10 +555,11 @@ function updateRisk(score, level, decisions, scrammed) {
     }
 }
 
-function animatePipeline(decisions) {
+function animatePipeline(decisions, hasPendingCase = false) {
     // S and R are always active
     pipelineActivated.pipeS = true;
     pipelineActivated.pipeR = true;
+    if (hasPendingCase) pipelineActivated.pipeD = true;
 
     // Once an agent acts, it stays activated permanently
     decisions.forEach(d => {
@@ -517,14 +584,24 @@ function animatePipeline(decisions) {
     });
 }
 
+let renderedRecommendationKey = '';
+
 function renderRecommendations(recommendations) {
     const section = document.getElementById('reviewSection');
     const content = document.getElementById('reviewContent');
     if (!recommendations || recommendations.length === 0) {
         section.style.display = 'none';
         content.innerHTML = '';
+        renderedRecommendationKey = '';
         return;
     }
+
+    // Manual mode keeps ticking while a case is open. Re-rendering identical
+    // cards every tick would wipe whatever the supervisor is typing, so only
+    // rebuild when the pending set actually changes.
+    const key = recommendations.map(rec => `${rec.id}:${rec.status}`).join('|');
+    if (key === renderedRecommendationKey) return;
+    renderedRecommendationKey = key;
 
     section.style.display = 'block';
     content.innerHTML = recommendations.map(rec => `
@@ -555,12 +632,20 @@ async function submitReview(recommendationId, decision) {
         window.alert('Enter the supervisor name before signing the decision.');
         return;
     }
-    const result = await postReview(recommendationId, decision, reviewer, note, manualMode ? 'manual' : 'timeline');
+    const scope = (manualMode || currentWorkspace === 'manual') ? 'manual' : 'timeline';
+    const result = await postReview(recommendationId, decision, reviewer, note, scope);
     if (!result) return;
     document.querySelector(`.review-card[data-id="${recommendationId}"]`)?.remove();
+    renderedRecommendationKey = '';
     if (!document.querySelector('.review-card')) {
         document.getElementById('reviewSection').style.display = 'none';
     }
+    addLogEntries([{
+        agent: 'HumanSupervisor',
+        action: `${decision.toUpperCase()}: ${recommendationId}`,
+        reasoning: `Signed by ${reviewer}${note ? ' — ' + note : ''}.`,
+        level: decision === 'approve' ? 'CRITICAL' : 'WARNING',
+    }], new Date().toISOString());
     if (!manualMode && !state.playing) sendControl('play');
 }
 
@@ -589,14 +674,14 @@ function switchWorkspace(workspace) {
     const allowed = ['simulation', 'manual', 'cases', 'evals', 'audit'];
     if (!allowed.includes(workspace)) return;
 
-    if (workspace === 'manual' && !manualMode) {
-        toggleManualMode(false, false);
-    } else if (currentWorkspace === 'manual' && workspace !== 'manual' && manualMode) {
-        // Preserve the manual orchestrator when moving to its case queue.
-        toggleManualMode(workspace === 'simulation', workspace === 'simulation');
-    }
-    if (workspace === 'simulation' && currentWorkspace !== 'simulation') {
-        fetch('/api/manual_reset', { method: 'POST' });
+    if (workspace === 'manual') {
+        enterManualMode();
+    } else {
+        // Stepping over to the case/audit/eval views only pauses the lab, so
+        // its pending recommendations stay reviewable. Returning to SIMULATION
+        // ends the lab session and gives the replay its charts back.
+        if (manualMode) pauseManualMode();
+        if (workspace === 'simulation' && manualSessionLive) endManualSession();
     }
 
     currentWorkspace = workspace;
@@ -976,37 +1061,63 @@ const chartLayout = {
 
 const chartConfig = { displayModeBar: false, responsive: true };
 
-function makeTraces(histColor, aiColor) {
-    const histName = manualMode ? 'Reactor State' : 'Historical';
-    const aiName = manualMode ? 'Protected State' : 'Governed Timeline';
+// Single source of truth: chart element ↔ telemetry series.
+const CHART_SERIES = [
+    ['chartPower', 'power'],
+    ['chartSteam', 'steam'],
+    ['chartRods', 'rods'],
+    ['chartTemp', 'temp'],
+    ['chartCoolant', 'coolant'],
+    ['chartRadiation', 'radiation'],
+];
+const CHART_IDS = CHART_SERIES.map(([id]) => id);
+const HISTORICAL_COLOR = '#e74c3c';
+const LIVE_COLOR = '#00d4ff';
+
+/**
+ * Manual mode draws exactly one line — the live reactor the operator is
+ * driving. Replay draws the recorded 1986 timeline plus the governed one.
+ */
+function makeTraces() {
+    if (manualMode) {
+        return [
+            { x: [], y: [], name: 'Live Reactor', line: { color: LIVE_COLOR, width: 2 }, type: 'scattergl' },
+        ];
+    }
     return [
-        { x: [], y: [], name: histName, line: { color: histColor, width: 2 }, type: 'scattergl' },
-        { x: [], y: [], name: aiName, line: { color: aiColor, width: 2, dash: 'dot' }, type: 'scattergl' },
+        { x: [], y: [], name: 'Historical', line: { color: HISTORICAL_COLOR, width: 2 }, type: 'scattergl' },
+        { x: [], y: [], name: 'Governed Timeline', line: { color: LIVE_COLOR, width: 2, dash: 'dot' }, type: 'scattergl' },
     ];
 }
 
-const charts = {};
+function updateChartLegends() {
+    const markup = manualMode
+        ? '<span class="legend-dot live"></span>Live Reactor'
+        : '<span class="legend-dot historical"></span>Historical <span class="legend-dot ai"></span>Governed';
+    document.querySelectorAll('.chart-legend').forEach(el => { el.innerHTML = markup; });
+}
+
+function clearChartBuffers() {
+    chartData.timestamps = [];
+    Object.keys(chartData.historical).forEach(k => chartData.historical[k] = []);
+    Object.keys(chartData.intervened).forEach(k => chartData.intervened[k] = []);
+    pendingPoints.timestamps = [];
+    Object.keys(pendingPoints.historical).forEach(k => pendingPoints.historical[k] = []);
+    Object.keys(pendingPoints.intervened).forEach(k => pendingPoints.intervened[k] = []);
+}
 
 function initCharts() {
-    const defs = [
-        ['chartPower', '#e74c3c', '#00d4ff'],
-        ['chartRods', '#e74c3c', '#00d4ff'],
-        ['chartCoolant', '#e74c3c', '#00d4ff'],
-        ['chartSteam', '#e74c3c', '#00d4ff'],
-        ['chartTemp', '#e74c3c', '#00d4ff'],
-        ['chartRadiation', '#e74c3c', '#00d4ff'],
-    ];
-
+    updateChartLegends();
     if (typeof window.Plotly === 'undefined') {
-        defs.forEach(([id]) => {
+        CHART_IDS.forEach(id => {
             document.getElementById(id).innerHTML = '<div class="empty-state">Charts unavailable; live telemetry and governance controls remain active.</div>';
         });
         return;
     }
-    defs.forEach(([id, hc, ac]) => {
-        const traces = makeTraces(hc, ac);
-        Plotly.newPlot(id, traces, { ...chartLayout }, chartConfig);
-        charts[id] = true;
+    CHART_IDS.forEach(id => {
+        // newPlot replaces the whole figure, so any leftover shapes/annotations
+        // from a previous mode go with it.
+        Plotly.newPlot(id, makeTraces(), { ...chartLayout }, chartConfig);
     });
 }
 
@@ -1019,7 +1130,9 @@ const pendingPoints = {
 
 function appendChartData(data) {
     const h = data.historical;
-    const a = data.intervened;
+    // Manual ticks carry no counterfactual timeline; fall back to the live
+    // values so the parallel arrays never desynchronise.
+    const a = data.intervened || h;
     const tick = data.tick;
 
     // Track in main arrays for seek/reset
@@ -1078,8 +1191,8 @@ function updateCharts() {
     const h = pts.historical;
     const a = pts.intervened;
 
-    const chartIds = ['chartPower', 'chartRods', 'chartCoolant', 'chartSteam', 'chartTemp', 'chartRadiation'];
-    const hKeys = ['power', 'rods', 'coolant', 'steam', 'temp', 'radiation'];
+    const hKeys = CHART_SERIES.map(([, key]) => key);
+    const singleTrace = manualMode;
 
     // Snapshot pending data before clearing (RAF runs async — buffer would be empty by then)
     const snapshotTs = ts.slice();
@@ -1093,11 +1206,12 @@ function updateCharts() {
     Object.keys(pendingPoints.intervened).forEach(k => pendingPoints.intervened[k] = []);
 
     requestAnimationFrame(() => {
-        for (let i = 0; i < chartIds.length; i++) {
-            Plotly.extendTraces(chartIds[i], {
-                x: [snapshotTs, snapshotTs],
-                y: [snapshotH[hKeys[i]], snapshotA[hKeys[i]]],
-            }, [0, 1], MAX_POINTS);
+        for (let i = 0; i < CHART_IDS.length; i++) {
+            const key = hKeys[i];
+            const update = singleTrace
+                ? { x: [snapshotTs], y: [snapshotH[key]] }
+                : { x: [snapshotTs, snapshotTs], y: [snapshotH[key], snapshotA[key]] };
+            Plotly.extendTraces(CHART_IDS[i], update, singleTrace ? [0] : [0, 1], MAX_POINTS);
         }
     });
 }

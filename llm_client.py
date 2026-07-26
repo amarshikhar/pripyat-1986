@@ -42,6 +42,10 @@ class LLMClient:
         self._last_call_ok = False
         self._last_call_time = None
         self.audit = audit  # AuditLogger instance (optional)
+        # Set while fast-forwarding a replay: the model has nothing to add to
+        # ticks the operator is scrubbing past, and waiting on it would make the
+        # seek take minutes.
+        self.suspended = False
         # Limit concurrent LLM calls to avoid Azure 429 rate limiting
         self._semaphore = asyncio.Semaphore(2)
         self._init_client()
@@ -75,7 +79,7 @@ class LLMClient:
 
     @property
     def available(self) -> bool:
-        return self.client is not None
+        return self.client is not None and not self.suspended
 
     @property
     def last_call_success(self) -> bool:

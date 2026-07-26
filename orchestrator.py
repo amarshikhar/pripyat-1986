@@ -68,6 +68,10 @@ class Orchestrator:
     State is accumulated and can be serialized for dashboard/audit.
     """
 
+    #: Ticks a rejected recommendation stays suppressed before the agent may
+    #: raise the same action again.
+    REPROPOSE_COOLDOWN_TICKS = 12
+
     def __init__(self, store: Optional[CaseAuditStore] = None, scope: str = "timeline"):
         self.bus = MessageBus()
         self.audit = AuditLogger()  # Audit trail for dashboard log panel
@@ -99,6 +103,10 @@ class Orchestrator:
         self.recommendations: dict[str, Recommendation] = {}
         self._recommendation_by_action: dict[str, str] = {}
         self._reviewed_actions: list[AgentAction] = []
+        # A rejected action may be proposed again if conditions persist, but not
+        # on the very next tick — that would spam the supervisor with a case the
+        # supervisor just declined.
+        self._rejected_at_tick: dict[str, int] = {}
 
         # Dyatlov is an adversarial-pressure signal, never a control path.
         self.override_history: list[dict] = []
@@ -116,6 +124,12 @@ class Orchestrator:
             existing_id = self._recommendation_by_action.get(proposal.action)
             if existing_id:
                 continue
+            rejected_tick = self._rejected_at_tick.get(proposal.action)
+            if rejected_tick is not None:
+                if self.tick_count - rejected_tick < self.REPROPOSE_COOLDOWN_TICKS:
+                    continue
+                # Cooldown elapsed and the hazard is still present — re-open the case.
+                self._rejected_at_tick.pop(proposal.action, None)
             recommendation = Recommendation(action=proposal)
             proposal.metadata["recommendation_id"] = recommendation.id
             self.recommendations[recommendation.id] = recommendation
@@ -226,6 +240,13 @@ class Orchestrator:
             })
             proposal.agent = "HumanSupervisor"
             self._reviewed_actions.append(proposal)
+        else:
+            # Rejected: release the dedup key so the agent can raise the case
+            # again (after a cooldown) if the plant is still outside its envelope.
+            for action_name, rec_id in list(self._recommendation_by_action.items()):
+                if rec_id == recommendation.id:
+                    self._recommendation_by_action.pop(action_name, None)
+                    self._rejected_at_tick[action_name] = self.tick_count
 
         self.audit.log(
             agent=f"human:{recommendation.reviewer}", log_type="RECOMMENDATION_REVIEWED",
@@ -552,6 +573,8 @@ class Orchestrator:
         self.sensor = SensorAgent()
         self.risk = RiskAgent(llm_client=self.llm)
         self.decision = RecommendationAgent(llm_client=self.llm)
+        # The safety kernel latches after a trip — it must be re-armed on reset
+        # or a replayed run would never trip again.
         self.safety = SafetyKernel()
         self.dyatlov = DyatlovAgent(llm_client=self.llm)
         self.evacuation = EvacuationAgent()
@@ -566,6 +589,7 @@ class Orchestrator:
         self.recommendations.clear()
         self._recommendation_by_action.clear()
         self._reviewed_actions.clear()
+        self._rejected_at_tick.clear()
         self.override_history.clear()
         self.total_override_attempts = 0
         self.total_override_failures = 0

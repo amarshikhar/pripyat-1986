@@ -5,7 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PRIPYAT-1986 | Agentic AI Crisis Response</title>
     <link rel="stylesheet" href="/static/style.css">
-    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%230d141d' stroke='%2300d4ff' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='4' fill='%2300d4ff'/%3E%3C/svg%3E">
+    <!-- Vendored so the control room renders on an air-gapped or firewalled
+         demo machine; a blocked CDN used to leave every chart empty. -->
+    <script src="/static/vendor/plotly-2.27.0.min.js"></script>
 </head>
 <body>
     <!-- Header -->
@@ -33,9 +36,9 @@
         <div class="control-group">
             <span class="control-label">Speed</span>
             <input type="range" class="speed-slider" id="speedSlider"
-                   min="1" max="2500" value="60"
+                   min="60" max="2500" step="20" value="900"
                    oninput="setSpeed(this.value)">
-            <span class="speed-value" id="speedValue">60x</span>
+            <span class="speed-value" id="speedValue">900x</span>
         </div>
 
         <div class="control-group">
@@ -94,20 +97,24 @@
             <div class="manual-panel" id="manualPanel" style="display:none">
                 <div class="panel-title manual-panel-title">&#9881; MANUAL CONTROL <span class="manual-badge" id="manualBadge">ACTIVE</span></div>
                 <div class="manual-control">
-                    <label>Control Rods</label>
+                    <div class="manual-control-head">
+                        <label for="rodsSlider">Control Rods <em>/211</em></label>
+                        <span class="manual-val">Target <span id="rodsVal">100</span></span>
+                        <span class="actual-val">Actual <span id="rodsActual">100</span></span>
+                    </div>
                     <input type="range" id="rodsSlider" min="0" max="211" value="100"
                            oninput="onManualSliderChange()">
-                    <span class="manual-val">Target: <span id="rodsVal">100</span></span>
-                    <span class="actual-val">Actual: <span id="rodsActual">100</span></span>
                 </div>
                 <div class="manual-control">
-                    <label>Coolant Flow</label>
+                    <div class="manual-control-head">
+                        <label for="coolantSlider">Coolant Flow <em>m&sup3;/h</em></label>
+                        <span class="manual-val">Target <span id="coolantVal">8000</span></span>
+                        <span class="actual-val">Actual <span id="coolantActual">8000</span></span>
+                    </div>
                     <input type="range" id="coolantSlider" min="0" max="8000" step="100" value="8000"
                            oninput="onManualSliderChange()">
-                    <span class="manual-val">Target: <span id="coolantVal">8000</span></span>
-                    <span class="actual-val">Actual: <span id="coolantActual">8000</span></span>
                 </div>
-                <div class="manual-control">
+                <div class="manual-control manual-control-inline">
                     <label>ECCS</label>
                     <div class="toggle on" id="eccsToggle" onclick="toggleECCS()">
                         <div class="toggle-knob"></div>
@@ -119,6 +126,10 @@
                     <div class="derived-row"><span>Temp</span><span id="derivedTemp">—</span><span>&deg;C</span></div>
                     <div class="derived-row"><span>Steam</span><span id="derivedSteam">—</span><span>MPa</span></div>
                     <div class="derived-row"><span>Radiation</span><span id="derivedRad">—</span><span>mrem/h</span></div>
+                </div>
+                <div class="manual-footer">
+                    <span class="manual-hint">Move a lever &rarr; the blue line follows. Cross two warning bands (rods &lt; 30 with coolant &lt; 6000) or switch ECCS off, and the agent opens a case for you to approve or reject.</span>
+                    <button class="btn manual-reset-btn" id="manualResetBtn" onclick="resetManualLab()">RESET LAB</button>
                 </div>
             </div>
 

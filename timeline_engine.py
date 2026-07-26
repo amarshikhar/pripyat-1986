@@ -35,7 +35,10 @@ class DualTimelineEngine:
     """
 
     def __init__(self, speed: int = SIMULATION["speed_multiplier"]):
-        self.simulator = EventSimulator(speed_multiplier=speed)
+        self.simulator = EventSimulator(
+            speed_multiplier=speed,
+            resolution_speed=SIMULATION["timeline_resolution_speed"],
+        )
         self.orchestrator = Orchestrator()
 
         # Intervention state

@@ -9,7 +9,7 @@ intervention and produce a new ReactorState at any future time offset.
 import math
 from dataclasses import replace
 from timeline_data import ReactorState
-from config import EVACUATION
+from config import EVACUATION, THRESHOLDS
 
 # ── Physics Constants (RBMK-1000) ─────────────────────────────────
 SCRAM_ROD_INSERTION_TIME_S = 18      # Full rod insertion takes ~18 seconds
@@ -143,6 +143,19 @@ def compute_manual_state(control_rods: int, coolant_flow: float, eccs_active: bo
     - eccs_active: Emergency Core Cooling System on/off.
 
     Returns a ReactorState with derived telemetry (power, temp, pressure, radiation).
+
+    The model is calibrated against the RBMK-1000 operating envelope in
+    config.THRESHOLDS so that the manual lab has a usable safe region:
+
+        rods=211, flow=8000  → 0 MW,    270 °C, 4.50 MPa   (shut down)
+        rods=100, flow=8000  → 1007 MW, 278 °C, 5.13 MPa   (nominal, safe)
+        rods=0,   flow=8000  → 3200 MW, 295 °C, 6.50 MPa   (rated power)
+        rods=0,   flow=5000  → 3200 MW, 306 °C, 6.68 MPa   (warning band)
+        rods=0,   flow=3000  → 3200 MW, 325 °C, 7.25 MPa   (hard-trip band)
+
+    Warnings therefore appear *before* the deterministic SafetyKernel trips,
+    which is what gives the human supervisor a window to accept or reject the
+    agent's recommendation.
     """
     from datetime import datetime
 
@@ -155,30 +168,34 @@ def compute_manual_state(control_rods: int, coolant_flow: float, eccs_active: bo
     # P = 3200 × (1 - rods/211)^1.8 — fewer rods = exponentially more power
     rod_fraction = rods / TOTAL_RODS
     power = 3200.0 * math.pow(max(0.0, 1.0 - rod_fraction), 1.8)
+    heat = power / 3200.0
 
-    # Temperature: heat balance — power heats the core, coolant removes heat
-    # T = 280 + (P/3200) × 400 × (8000 / max(coolant, 100))
-    effective_coolant = max(coolant, 100.0)  # Prevent division by near-zero
-    temperature = 280.0 + (power / 3200.0) * 400.0 * (NOMINAL_COOLANT_FLOW / effective_coolant)
+    # Temperature: heat balance — the core heats up with power and cools with
+    # flow. Rated power at nominal flow sits just under the 300 °C warning line;
+    # losing flow is what pushes the core into the danger band.
+    effective_coolant = max(coolant, 500.0)  # Prevent division by near-zero
+    cooling_deficit = math.pow(NOMINAL_COOLANT_FLOW / effective_coolant, 0.75)
+    temperature = 270.0 + 25.0 * heat * cooling_deficit
 
-    # Steam pressure: follows temperature (simplified saturation curve)
-    # At nominal 280°C → 6.5 MPa, scales with power fraction (not temp directly)
-    # SP = 6.5 + 1.5 × (P/3200) — linear rise, reaches ~8.0 at full power
-    steam_pressure = 6.5 + 1.5 * (power / 3200.0)
-
-    # Radiation: proportional to power squared, spikes if rods critically low
-    # R = 0.01 × (P/3200)^2 × (1 + 50×(rods<15))
-    power_ratio = power / 3200.0
-    rod_spike = 50.0 if rods < 15 else 0.0
-    radiation = 0.01 * (power_ratio ** 2) * (1.0 + rod_spike)
-
-    # ECCS off: core loses backup cooling → temperature rises, radiation increases
+    # ECCS off: the core loses its backup heat sink.
     if not eccs:
-        temperature *= 1.15
+        temperature += 12.0 * heat
+
+    # Steam pressure: rises with power, then sharply once the core runs hot.
+    # 4.50 MPa idle → 6.50 MPa at rated power → past 7.50 MPa when overheating.
+    steam_pressure = 4.5 + 2.0 * heat + max(0.0, temperature - 300.0) * 0.03
+
+    # Radiation: background scales with power, spikes when the shutdown margin
+    # is gone, and climbs steeply once the core is above its trip temperature
+    # (fuel cladding damage).
+    rod_spike = 50.0 if rods < THRESHOLDS["control_rods"]["critical_low"] else 0.0
+    overheat = max(0.0, temperature - THRESHOLDS["temperature_c"]["critical_high"])
+    radiation = 0.01 * (heat ** 2) * (1.0 + rod_spike) * (1.0 + (overheat / 40.0) ** 3)
+    if not eccs:
         radiation *= 3.0
 
     # Clamp to reasonable ranges
-    power = round(min(power, 50000.0), 1)  # Allow supercritical for dramatic effect
+    power = round(min(power, 50000.0), 1)
     temperature = round(min(temperature, 5000.0), 1)
     steam_pressure = round(min(steam_pressure, 20.0), 2)
     radiation = round(min(radiation, 100000.0), 4)

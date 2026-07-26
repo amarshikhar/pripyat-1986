@@ -44,6 +44,12 @@ SIMULATION = {
     "sim_start_from": "1986-04-25T22:00:00",  # Web UI starts playback from 22:00 (skip holding phase)
     "explosion_time": "1986-04-26T01:23:40",
     "tick_interval_sec": 1.0,  # How often simulator emits events
+    # Timeline resolution is fixed so that changing playback speed never
+    # changes how many data points the charts get (1 tick ≈ 1 simulated minute).
+    "timeline_resolution_speed": 60,
+    # Dashboard playback default: 900x = 15 ticks/s = 15 simulated minutes per
+    # real second. Playback rate is speed / 60 ticks per second.
+    "web_default_speed": int(os.getenv("WEB_SIM_SPEED", "900")),
 }
 
 # ── Reactor Safety Thresholds (RBMK-1000) ─────────────────────────

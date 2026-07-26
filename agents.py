@@ -367,6 +367,17 @@ class RiskAgent:
         total = raw * compound_mult
         rule_score = min(100, round(total))
 
+        # Severity floor. The weighted average dilutes a single parameter that
+        # is far outside its band — a core at 330 °C is not a "12/100" plant just
+        # because every other reading is nominal. The floor keeps the gauge
+        # honest without letting one warning saturate it.
+        if not post_scram:
+            worst = max(scores.values(), default=0)
+            if worst >= 100:
+                rule_score = max(rule_score, 70)
+            elif worst >= 60:
+                rule_score = max(rule_score, 35)
+
         return rule_score, scores
 
     async def _llm_risk_assessment(self, state: ReactorState, rule_score: int, scores: dict,
@@ -456,10 +467,15 @@ class RiskAgent:
         if self.score_history:
             prev_score = self.score_history[-1][1]
             post_scram_ema = bool(state.tags and "scram" in state.tags)
+            manual_ema = bool(state.tags and "manual" in state.tags)
             if self.current_score > prev_score:
                 alpha = 0.45  # Rising: react to escalation within ~2 ticks
             elif post_scram_ema:
                 alpha = 0.40  # Post-SCRAM falling: reach normal in ~5 ticks
+            elif manual_ema:
+                # Manual lab: the operator moved a lever, so recovery must be
+                # visible on the gauge within a few seconds, not ~15 ticks.
+                alpha = 0.35
             else:
                 alpha = 0.15  # Normal falling: gradual recovery over ~15 ticks
             self.current_score = round(alpha * self.current_score + (1 - alpha) * prev_score)
@@ -635,6 +651,39 @@ class RecommendationAgent:
                     },
                 ))
 
+        # PROPOSAL RULE 2b: manual lab early triage.
+        # In the manual control room the operator drives the plant directly, so
+        # the agent watches the *warning* band (which sits below every
+        # SafetyKernel hard-trip limit) and asks the supervisor to decide while
+        # there is still a decision to make. Timeline replay is unaffected.
+        is_manual = bool(state.tags and "manual" in state.tags)
+        already_proposing_scram = any(
+            a.action == "AZ-5 EMERGENCY SHUTDOWN (SCRAM)" for a in actions
+        )
+        if is_manual and not self.reactor_scrammed and not already_proposing_scram:
+            crossings, escalate = self._threshold_crossings(state, risk_score)
+            if escalate:
+                actions.append(AgentAction(
+                    agent=self.name,
+                    timestamp=state.timestamp,
+                    action="AZ-5 EMERGENCY SHUTDOWN (SCRAM)",
+                    reasoning=(
+                        "Operator inputs pushed the core past its safe operating envelope: "
+                        + "; ".join(crossings)
+                        + f". Risk {risk_score}/100. Recommending AZ-5 before the deterministic "
+                          "safety kernel is forced to trip. No action is taken until a supervisor "
+                          "approves or rejects this recommendation."
+                    ),
+                    alert_level=AlertLevel.CRITICAL,
+                    metadata={
+                        "risk_score": risk_score,
+                        "trigger": "manual_threshold_crossing",
+                        "threshold_crossings": crossings,
+                        "review_authority": "human_supervisor",
+                        "source": "rule",
+                    },
+                ))
+
         # PROPOSAL RULE 3: recommend evacuation if radiation is dangerous
         if (state.radiation_mrem_h >= THRESHOLDS["radiation_mrem_h"]["dangerous"]
                 and not self.evacuation_ordered):
@@ -652,6 +701,64 @@ class RecommendationAgent:
             ))
 
         return actions
+
+    @staticmethod
+    def _threshold_crossings(state: ReactorState, risk_score: int) -> tuple[list[str], bool]:
+        """Warning-band threshold crossings, described in operator language.
+
+        Returns the crossings plus whether they warrant a supervisor case.
+
+        Every limit here is deliberately *looser* than the matching SafetyKernel
+        hard-trip limit, so the human review window opens before the trip. One
+        mild warning on an otherwise healthy plant is monitored, not escalated;
+        a case is opened when two bands are breached at once or when a single
+        reading is closing on its trip limit.
+        """
+        t = THRESHOLDS
+        crossings: list[str] = []
+        proximate = False
+
+        if state.control_rods_inserted <= t["control_rods"]["minimum_safe"]:
+            crossings.append(
+                f"shutdown margin below minimum ({state.control_rods_inserted}/211 rods inserted, "
+                f"minimum safe {t['control_rods']['minimum_safe']})"
+            )
+            proximate |= state.control_rods_inserted <= t["control_rods"]["critical_low"] + 5
+        if state.coolant_flow_m3h <= t["coolant_flow_m3h"]["low_warning"]:
+            crossings.append(
+                f"coolant flow {state.coolant_flow_m3h:.0f} m³/h below "
+                f"{t['coolant_flow_m3h']['low_warning']:.0f} m³/h"
+            )
+            proximate |= state.coolant_flow_m3h <= t["coolant_flow_m3h"]["critical_low"] * 1.2
+        if state.temperature_c >= t["temperature_c"]["high_warning"]:
+            crossings.append(
+                f"core temperature {state.temperature_c:.0f}°C above "
+                f"{t['temperature_c']['high_warning']}°C"
+            )
+            proximate |= state.temperature_c >= t["temperature_c"]["critical_high"] - 8
+        if state.steam_pressure_mpa >= t["steam_pressure_mpa"]["high_warning"]:
+            crossings.append(
+                f"steam pressure {state.steam_pressure_mpa:.2f} MPa above "
+                f"{t['steam_pressure_mpa']['high_warning']} MPa"
+            )
+            proximate |= state.steam_pressure_mpa >= t["steam_pressure_mpa"]["critical_high"] - 0.2
+        if state.radiation_mrem_h >= t["radiation_mrem_h"]["elevated"]:
+            crossings.append(f"radiation elevated at {state.radiation_mrem_h:.2f} mrem/h")
+            proximate |= state.radiation_mrem_h >= t["radiation_mrem_h"]["dangerous"]
+        if state.power_mw <= t["power_mw"]["danger_low"] and state.power_mw > 0:
+            crossings.append(
+                f"power {state.power_mw:.0f} MW inside the xenon-poisoning band "
+                f"(below {t['power_mw']['danger_low']} MW)"
+            )
+        if not state.eccs_active and state.power_mw > t["power_mw"]["danger_low"]:
+            # The last cooling barrier is gone while the core is producing heat.
+            crossings.append(f"ECCS disabled while the core is at {state.power_mw:.0f} MW")
+            proximate = True
+        if risk_score >= RISK_CONFIG["warning_threshold"]:
+            crossings.append(f"composite risk {risk_score}/100 at or above the review threshold")
+            proximate = True
+
+        return crossings, (proximate or len(crossings) >= 2)
 
     async def _llm_recommend(self, state: ReactorState, risk_score: int,
                      sensor_alerts: list[AgentMessage]) -> Optional[dict]:
@@ -814,8 +921,10 @@ class RecommendationAgent:
                     metadata={"source": "rule"},
                 ))
 
-        # Abort test if conditions unmet
-        if (state.power_mw < THRESHOLDS["power_mw"]["test_target"]
+        # Abort test if conditions unmet. There is no test running in the manual
+        # lab, so this proposal only applies to timeline replay.
+        if (not (state.tags and "manual" in state.tags)
+                and state.power_mw < THRESHOLDS["power_mw"]["test_target"]
                 and state.control_rods_inserted <= THRESHOLDS["control_rods"]["minimum_safe"]
                 and not self.reactor_scrammed):
             if not any(a.action == "ABORT TEST" for a in self.decisions):

@@ -140,47 +140,67 @@ We proved it works. Against the worst case in history."
 ---
 
 ## MANUAL MODE (4:20 – 6:00)
-*Click MANUAL. Sliders appear.*
+*Click MANUAL LAB. Levers appear. Every chart drops to a single blue line —
+that line is the reactor I am now driving.*
 
 "Now I try to cause a meltdown.
 
-I have direct control. Real physics equations.
+I have direct control. Real physics.
 Control rods. Coolant. Emergency cooling.
 
-Risk at 16. Everything green. Let's go."
+Risk at 4. Everything green. Let's go."
 
-*Slowly pull rods out*
+*Drag the control-rod lever down to ~25*
 
-"Pulling rods. Power rising — 1,000... 2,000... 2,500 megawatts.
-Temperature climbing. Risk jumping — yellow... WARNING... 58.
+"Pulling rods out. Watch the blue line — power rising.
+1,000... 2,000... 2,500 megawatts. Temperature climbing.
+Risk goes yellow. WARNING.
 
-The LLM is calling Azure right now.
-You can see the latency — that's a live API call. Not a mockup."
+One warning band. The agent watches. It does not act."
 
-*Keep pulling*
+*Drag the coolant lever down to ~5,000*
 
-"Risk at 70... 80..."
+"Now I starve the core of coolant. Second band crossed."
 
-*Let SCRAM fire. Pause. Then:*
+*The Human Safety Review card appears. Stop talking for 2 seconds.*
 
-"**REACTOR SCRAMMED. Automatic.**
-I didn't touch anything.
+"**There it is.** The agent has opened a case:
+*AZ-5 emergency shutdown.* It tells me exactly which thresholds I crossed.
 
-Now watch —"
+And notice what has **not** happened. Nothing moved.
+The recommendation is inert. It says: approve, or reject.
 
-*Wiggle the sliders aggressively*
+Let me reject it."
 
-"I'm yanking the sliders. Everything I've got.
+*Click REJECT*
 
-Nothing. Happens.
+"Rejected. Signed, timestamped, in the audit trail.
+The reactor keeps running, because the agent has no actuator authority.
+That is the whole point — the AI advises, the human decides.
 
-The AI took over. Rods inserting. Power decaying.
-Reactor shutting down safely.
+So let me be Dyatlov. Let me be reckless."
+
+*Drag the coolant lever to the floor*
+
+"I'm taking the coolant to nothing —"
+
+*SafetyKernel trips. Pause 2 seconds.*
+
+"**REACTOR SCRAMMED.**
+
+Not the AI. Not me. The deterministic safety kernel —
+a few lines of code reading raw telemetry, that no model
+and no operator can talk out of a trip.
+
+Rods inserting. Power decaying. Reactor shutting down safely.
 
 **I cannot stop it.**
 
 In 1986, Dyatlov could override the safety systems.
-In this architecture — that is **impossible**."
+In this architecture — that is **impossible**.
+
+Two authorities. The agent asks. The kernel acts.
+Neither one of them is a language model with its hand on the switch."
 
 *Let risk fall back to green. Pause.*
 
@@ -227,8 +247,10 @@ Thank you."
 | After intro | Hit PLAY |
 | Risk hits 85 | Stop talking for 2 sec |
 | Charts diverge | Stop talking for 3 sec |
-| Switch to manual | Click MANUAL button |
-| Manual SCRAM fires | Stop talking for 2 sec |
+| Switch to manual | Click MANUAL LAB tab |
+| Manual: open the case | Rods to ~25, then coolant to ~5,000 |
+| Review card appears | Stop talking for 2 sec, then REJECT |
+| Manual SCRAM fires | Coolant to the floor; stop talking for 2 sec |
 | "I cannot stop it" | Wiggle sliders while saying it |
 | "The disaster is just the proof" | Pause 1 sec, then pivot to replicability |
 | "Thank you" | Stop. Look up. Don't add anything. |

@@ -27,8 +27,12 @@ class EventSimulator:
         self,
         speed_multiplier: int = SIMULATION["speed_multiplier"],
         on_event: Optional[Callable] = None,
+        resolution_speed: Optional[int] = None,
     ):
         self.speed = speed_multiplier
+        # Interpolation density. Callers that change playback speed at runtime
+        # pin this so the timeline keeps a constant number of points.
+        self.resolution_speed = resolution_speed or speed_multiplier
         self.on_event = on_event  # Callback when event fires
         start_from = SIMULATION.get("sim_start_from")
         if start_from:
@@ -56,8 +60,8 @@ class EventSimulator:
             t_next = datetime.fromisoformat(next_evt.timestamp)
             gap_seconds = (t_next - t_current).total_seconds()
 
-            # How many ticks fit in this gap at current speed
-            real_seconds = gap_seconds / self.speed
+            # How many ticks fit in this gap at the interpolation resolution
+            real_seconds = gap_seconds / self.resolution_speed
             num_steps = max(int(real_seconds / SIMULATION["tick_interval_sec"]), 1)
 
             for step in range(num_steps):
@@ -136,7 +140,7 @@ class EventSimulator:
         self.paused = False
 
     def set_speed(self, multiplier: int):
-        """Change simulation speed dynamically (affects tick interval)."""
+        """Change playback speed. Timeline resolution is unaffected."""
         self.speed = max(1, multiplier)
 
     def step(self) -> Optional[ReactorState]:

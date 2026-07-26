@@ -13,6 +13,7 @@ import logging
 import os
 import sys
 import argparse
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -35,7 +36,7 @@ from typing import Literal, Optional
 from timeline_engine import DualTimelineEngine
 from config import SIMULATION
 from orchestrator import Orchestrator
-from physics import compute_manual_state, compute_scram_decay, TOTAL_RODS, NOMINAL_COOLANT_FLOW
+from physics import compute_manual_state, compute_scram_decay, NOMINAL_COOLANT_FLOW
 from evaluation import run_evaluation
 
 app = FastAPI(title="PRIPYAT-1986")
@@ -47,7 +48,7 @@ STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 engine = DualTimelineEngine()
 sim_state = {
     "playing": False,
-    "speed": SIMULATION["speed_multiplier"],
+    "speed": SIMULATION["web_default_speed"],
     "tick_interval": SIMULATION["tick_interval_sec"],
 }
 connected_clients: set[WebSocket] = set()
@@ -95,13 +96,25 @@ async def broadcast_state():
 async def simulation_loop():
     """Main simulation loop — processes ticks and broadcasts."""
     TARGET_FPS = 15  # Max broadcasts per second to keep UI responsive
+    # One tick is one simulated minute, so playback runs at speed/60 ticks per
+    # second. The fractional remainder carries between frames, which is what
+    # makes speeds below one tick per frame actually slow the replay down
+    # (integer truncation used to collapse every speed under 900x to the same
+    # 15 ticks/s).
+    tick_budget = 0.0
     while sim_state["playing"]:
-        # At high speeds, batch multiple ticks but only broadcast the last one
-        effective_rate = sim_state["speed"] / SIMULATION["speed_multiplier"]
-        ticks_per_frame = max(1, int(effective_rate / TARGET_FPS))
+        ticks_per_second = max(sim_state["speed"], 1) / 60.0
+        tick_budget += ticks_per_second / TARGET_FPS
+        ticks_this_frame = int(tick_budget)
+        tick_budget -= ticks_this_frame
 
+        if ticks_this_frame == 0:
+            await asyncio.sleep(1.0 / TARGET_FPS)
+            continue
+
+        # At high speeds, batch multiple ticks but only broadcast the last one
         tick_data = None
-        for _ in range(ticks_per_frame):
+        for _ in range(ticks_this_frame):
             tick_data = await engine.process_tick()
             if tick_data is None:
                 break
@@ -153,6 +166,14 @@ class ControlCommand(BaseModel):
     value: Optional[float] = None
 
 
+ALLOWED_REVIEW_ACTIONS = {
+    "AZ-5 EMERGENCY SHUTDOWN (SCRAM)",
+    "ORDER IMMEDIATE EVACUATION OF PRIPYAT",
+    "ABORT TEST",
+    "ECCS VIOLATION WARNING",
+}
+
+
 class ReviewCommand(BaseModel):
     decision: Literal["approve", "reject", "edit"]
     reviewer: str = Field(min_length=2, max_length=80)
@@ -199,11 +220,57 @@ async def eval_report():
     return await run_evaluation()
 
 
+def _archived_case_review(recommendation_id: str, cmd: ReviewCommand) -> dict:
+    """Record a decision on a case whose live session no longer exists.
+
+    Cases outlive the run that produced them (the manual lab is reset, the
+    timeline is replayed).  The decision must still be recordable and
+    attributable; it simply cannot queue an action, so it is never executed.
+    """
+    store = engine.orchestrator.store
+    case = store.get_case(recommendation_id)
+    if case is None:
+        raise HTTPException(404, "case not found")
+    if case["status"] != "pending_review":
+        raise HTTPException(409, f"recommendation already decided ({case['status']})")
+
+    final_action = case["action"]
+    if cmd.decision == "edit":
+        if cmd.edited_action not in ALLOWED_REVIEW_ACTIONS:
+            raise HTTPException(422, "edited action is not in the approved control vocabulary")
+        final_action = cmd.edited_action
+        status = "approved_with_edits"
+    else:
+        status = "approved" if cmd.decision == "approve" else "rejected"
+
+    review = {
+        "status": status,
+        "action": final_action,
+        "reviewer": cmd.reviewer.strip(),
+        "note": cmd.note.strip(),
+        "reviewed_at": datetime.now(timezone.utc).isoformat(),
+        "executed": False,
+    }
+    try:
+        store.update_case_review(recommendation_id, review)
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+    store.add_audit_event(
+        case["run_id"], case["sim_timestamp"], case.get("tick", 0) or 0,
+        f"human:{review['reviewer']}", "case_reviewed", "case", recommendation_id,
+        status, {**review, "live_session": False},
+    )
+    return {**review, "id": recommendation_id, "live_session": False}
+
+
 @app.post("/api/recommendations/{recommendation_id}/decision")
 async def review_recommendation(recommendation_id: str, cmd: ReviewCommand):
     orchestrator = manual_orchestrator if cmd.scope == "manual" else engine.orchestrator
-    if orchestrator is None:
-        raise HTTPException(404, "simulation scope not initialized")
+    if orchestrator is None or recommendation_id not in orchestrator.recommendations:
+        # The case belongs to a session that has since been reset. Persist the
+        # signed decision anyway rather than dropping it on the floor.
+        return _archived_case_review(recommendation_id, cmd)
     try:
         result = orchestrator.review_recommendation(
             recommendation_id=recommendation_id,
@@ -242,39 +309,22 @@ async def control(cmd: ControlCommand):
         engine.set_speed(speed)
     elif cmd.action == "toggle_intervention":
         engine.intervention_enabled = not engine.intervention_enabled
-
-
-@app.post("/api/control")
-async def control(cmd: ControlCommand):
-    """Handle simulation control commands."""
-    if cmd.action == "play":
-        start_simulation()
-    elif cmd.action == "pause":
-        await stop_simulation()
-    elif cmd.action == "reset":
-        await stop_simulation()
-        engine.reset()
-    elif cmd.action == "step":
-        if not sim_state["playing"]:
-            tick_data = await engine.process_tick()
-            if tick_data:
-                await broadcast(tick_data)
-    elif cmd.action == "set_speed":
-        speed = max(1, min(2500, int(cmd.value or 60)))
-        sim_state["speed"] = speed
-        engine.set_speed(speed)
-    elif cmd.action == "toggle_intervention":
-        engine.intervention_enabled = not engine.intervention_enabled
     elif cmd.action == "seek":
         if not sim_state["playing"] and cmd.value is not None:
             await stop_simulation()
             target = int(cmd.value)
             engine.reset()
-            # Replay up to target tick silently
-            for _ in range(target):
-                tick_data = await engine.process_tick()
-                if tick_data is None:
-                    break
+            # Replay up to the target tick silently. Model calls are suspended
+            # for the fast-forward so scrubbing stays instant.
+            engine.orchestrator.llm.suspended = True
+            tick_data = None
+            try:
+                for _ in range(target):
+                    tick_data = await engine.process_tick()
+                    if tick_data is None:
+                        break
+            finally:
+                engine.orchestrator.llm.suspended = False
             # Send the final tick to update the UI
             if tick_data:
                 await broadcast(tick_data)
@@ -290,10 +340,12 @@ manual_active = False
 _manual_tick_lock = asyncio.Lock()
 
 # Gradual ramp state — simulates real reactor inertia
-manual_actual_rods: float = 100.0
-manual_actual_coolant: float = 8000.0
-RODS_RAMP_RATE = 3.0       # rods moved per tick (full insertion 211 → ~70 ticks = realistic)
-COOLANT_RAMP_RATE = 400.0   # m³/h change per tick
+MANUAL_DEFAULT_RODS = 100.0
+manual_actual_rods: float = MANUAL_DEFAULT_RODS
+manual_actual_coolant: float = NOMINAL_COOLANT_FLOW
+MANUAL_TICK_SECONDS = 1.0   # Must match MANUAL_TICK_RATE_MS in static/app.js
+RODS_RAMP_RATE = 7.0        # rods moved per tick (~30 s for full 211-rod travel)
+COOLANT_RAMP_RATE = 700.0   # m³/h change per tick (~11 s across the full range)
 
 # SCRAM state for manual mode
 manual_scram_active = False
@@ -328,7 +380,7 @@ async def _process_manual_tick(cmd: ManualTickCommand):
 
     if manual_scram_active and manual_scram_state:
         ticks_since_scram = manual_orchestrator.tick_count - manual_scram_tick + 1
-        elapsed_s = ticks_since_scram * 1.5
+        elapsed_s = ticks_since_scram * MANUAL_TICK_SECONDS
         state = compute_scram_decay(manual_scram_state, elapsed_s)
         state.tags = ["manual", "scram"]
         state.event_description = None
@@ -373,13 +425,7 @@ async def _process_manual_tick(cmd: ManualTickCommand):
             "source": tick_summary.get("risk_source", "rule"),
         }]
 
-    baseline = compute_manual_state(TOTAL_RODS, NOMINAL_COOLANT_FLOW, True)
-
     risk_score = tick_summary["risk_score"]
-    is_diverged = risk_score >= 30 or bool(decisions and any(
-        d.get("action", "").startswith("AZ-5") or d.get("action", "").startswith("ABORT")
-        for d in decisions
-    ))
 
     tick_data = {
         "type": "tick",
@@ -395,14 +441,9 @@ async def _process_manual_tick(cmd: ManualTickCommand):
                 "temperature_c": state.temperature_c,
                 "radiation": state.radiation_mrem_h,
             },
-            "intervened": {
-                "power_mw": baseline.power_mw,
-                "control_rods": baseline.control_rods_inserted,
-                "coolant_flow": baseline.coolant_flow_m3h,
-                "steam_pressure": baseline.steam_pressure_mpa,
-                "temperature_c": baseline.temperature_c,
-                "radiation": baseline.radiation_mrem_h,
-            },
+            # Manual mode plots exactly one line: the live reactor. There is no
+            # counterfactual timeline to compare against here.
+            "intervened": None,
             "risk_score": risk_score,
             "alert_level": tick_summary["alert_level"],
             "decisions": decisions,
@@ -416,7 +457,8 @@ async def _process_manual_tick(cmd: ManualTickCommand):
             "counterfactual": None,
             "state": {
                 **tick_summary["state"],
-                "diverged": is_diverged,
+                "diverged": False,
+                "scram_pending_review": bool(tick_summary.get("pending_recommendations")),
             },
             "source": "manual",
         },
@@ -446,8 +488,8 @@ async def manual_reset():
     global manual_scram_active, manual_scram_state, manual_scram_tick
     manual_orchestrator = None
     manual_active = False
-    manual_actual_rods = 100.0
-    manual_actual_coolant = 8000.0
+    manual_actual_rods = MANUAL_DEFAULT_RODS
+    manual_actual_coolant = NOMINAL_COOLANT_FLOW
     manual_scram_active = False
     manual_scram_state = None
     manual_scram_tick = 0
